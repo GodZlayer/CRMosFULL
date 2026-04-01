@@ -1,0 +1,33 @@
+Pasta pronta para shared host com Node.js.
+
+Estrutura deste pacote:
+- public_html/: frontend buildado
+- server/: API + storage persistente
+- scripts/: utilitarios do projeto
+- package.json: comando de start
+
+Comando de inicializacao:
+npm install
+npm start
+
+Observacao:
+Este projeto usa node:sqlite com a flag --experimental-sqlite.
+O host precisa permitir Node com esse recurso ativo.
+
+Base atual incluida neste pacote:
+A base local atual foi copiada para ./server/storage/database/crm.sqlite.
+Os uploads atuais foram copiados para ./server/storage/uploads.
+
+Porta:
+Defina PORT, APP_PORT ou NODE_PORT no ambiente do host. Se nao definir, o servidor usa 3000.
+
+Frontend:
+O servidor de producao prioriza ./public_html como raiz estatica.
+
+Persistencia:
+Se voce atualizar o sistema no host sem querer perder dados, preserve ./server/storage.
+
+Backup MySQL automatico:
+O servidor de producao tenta enviar backup para MySQL a cada 2 horas, mas somente se o crm.sqlite ou crm.sqlite-wal tiver mudado desde o ultimo backup bem-sucedido.
+Para desativar: CRM_AUTO_MYSQL_BACKUP_ENABLED=0
+Para alterar o intervalo: CRM_AUTO_MYSQL_BACKUP_INTERVAL_MS=7200000

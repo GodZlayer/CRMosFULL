@@ -1,0 +1,12 @@
+{
+  "name": "brasil-express-crm-sharedhost",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "mysql2": "^3.20.0"
+  },
+  "scripts": {
+    "start": "node --experimental-sqlite server/prod-server.mjs"
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "collections": {
+    "clients": ["clientes", "clients"],
+    "catalogItems": ["catalogo", "produtos", "estoque"],
+    "services": ["servicos", "services"],
+    "orders": ["os", "orders", "ordensServico"],
+    "financeEntries": ["financeiro", "lancamentos", "financeEntries"]
+  },
+  "fields": {
+    "clients": {
+      "name": ["nome", "name"],
+      "phone": ["telefone", "phone"],
+      "email": ["email"],
+      "document": ["documento", "document", "cpf", "cnpj"],
+      "address": ["endereco", "address"],
+      "notes": ["observacoes", "notes"],
+      "createdAt": ["createdAt", "created_at"],
+      "updatedAt": ["updatedAt", "updated_at"]
+    },
+    "catalogItems": {
+      "sku": ["sku", "barcode", "ean"],
+      "name": ["nome", "name"],
+      "category": ["categoria", "category"],
+      "subcategory": ["subcategoria", "subcategory"],
+      "description": ["descricao", "description"],
+      "itemCondition": ["condicao", "condition", "itemCondition"],
+      "stockQuantity": ["estoque", "quantity", "stockQuantity"],
+      "minStock": ["estoqueMinimo", "minStock"],
+      "costAmount": ["valorCompra", "custo", "costAmount"],
+      "priceAmount": ["valorVenda", "preco", "priceAmount"],
+      "active": ["ativo", "active"],
+      "locationType": ["destino", "locationType"],
+      "isStoreInventory": ["inventario", "isStoreInventory"],
+      "createdAt": ["createdAt", "created_at"],
+      "updatedAt": ["updatedAt", "updated_at"]
+    },
+    "services": {
+      "name": ["nome", "name"],
+      "description": ["descricao", "description"],
+      "priceAmount": ["valor", "price", "priceAmount"],
+      "estimatedMinutes": ["tempoMinimo", "estimatedMinutes"],
+      "active": ["ativo", "active"],
+      "createdAt": ["createdAt", "created_at"],
+      "updatedAt": ["updatedAt", "updated_at"]
+    },
+    "orders": {
+      "clientRef": ["clientId", "clienteId", "client.id", "cliente.id"],
+      "clientName": ["clientName", "clienteNome", "client.name", "cliente.name"],
+      "clientPhone": ["clientPhone", "clienteTelefone", "client.phone", "cliente.phone"],
+      "equipmentName": ["equipamento", "equipmentName", "equipment"],
+      "accessories": ["acessorios", "accessories"],
+      "accessoriesOther": ["acessoriosOutros", "accessoriesOther"],
+      "defect": ["defeito", "defect", "defeitoRelatado"],
+      "extras": ["estadoFisico", "extras", "physicalState"],
+      "preApproved": ["preApproved", "pre_approved"],
+      "approvalStatus": ["statusAprovacao", "approvalStatus"],
+      "orderStatus": ["status", "orderStatus"],
+      "dueDate": ["previsao", "dueDate"],
+      "openedAt": ["dataAbertura", "openedAt"],
+      "actualAmount": ["valorReal", "actualAmount"],
+      "discountAmount": ["desconto", "discountAmount"],
+      "paymentMethod": ["formaPagamento", "paymentMethod"],
+      "notes": ["observacoes", "notes"],
+      "code": ["codigo", "code"],
+      "items": ["produtos", "items", "pecas"],
+      "services": ["servicos", "services"],
+      "requestedProducts": ["encomendas", "requestedProducts", "produtosEncomendados"],
+      "createdAt": ["createdAt", "created_at"],
+      "updatedAt": ["updatedAt", "updated_at"],
+      "concludedAt": ["concludedAt", "concluded_at"],
+      "deliveredAt": ["deliveredAt", "delivered_at"],
+      "cancelledAt": ["cancelledAt", "cancelled_at"]
+    },
+    "financeEntries": {
+      "entryType": ["tipo", "entryType"],
+      "category": ["categoria", "category"],
+      "description": ["descricao", "description", "desc"],
+      "amount": ["valor", "amount"],
+      "entryDate": ["data", "entryDate"],
+      "paymentMethod": ["formaPagamento", "paymentMethod"],
+      "orderRef": ["orderId", "osId", "codigoOS"],
+      "createdAt": ["createdAt", "created_at"],
+      "updatedAt": ["updatedAt", "updated_at"]
+    }
+  }
+}

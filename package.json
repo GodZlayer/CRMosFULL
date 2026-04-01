@@ -1,0 +1,40 @@
+{
+    "name": "brasil-express-crm",
+    "private": true,
+    "version": "0.1.0",
+    "type": "module",
+    "scripts": {
+        "dev": "node scripts/dev.mjs",
+        "dev:web": "node scripts/dev-web.mjs",
+        "dev:api": "node --watch --experimental-sqlite server/dev-api.mjs",
+        "build": "vite build",
+        "preview": "vite preview --host 0.0.0.0 --port 4173",
+        "test": "node --experimental-sqlite --test server/*.test.mjs",
+        "seed": "node --experimental-sqlite server/dev-api.mjs --seed-only",
+        "data:clear": "node --experimental-sqlite scripts/clear-data.mjs",
+        "build:sharedhost": "node scripts/build-sharedhost.mjs",
+        "import:legacy-ods": "node --experimental-sqlite scripts/import-legacy-ods.mjs",
+        "firestore:inspect": "node --experimental-sqlite scripts/migrate-firestore.mjs inspect",
+        "firestore:migrate": "node --experimental-sqlite scripts/migrate-firestore.mjs migrate",
+        "catalog:normalize-import": "node --experimental-sqlite scripts/normalize-imported-catalog.mjs",
+        "catalog:cleanup-duplicates": "node --experimental-sqlite scripts/cleanup-catalog-duplicates.mjs",
+        "catalog:archive-zero-stock-new": "node --experimental-sqlite scripts/archive-crm-only-new-zero-stock.mjs",
+        "catalog:sync-caixa-stock": "node --experimental-sqlite scripts/sync-caixa-stock.mjs",
+        "finance:sync-caixa": "node --experimental-sqlite scripts/sync-caixa-finance.mjs",
+        "pdv:clear-sales": "node --experimental-sqlite scripts/clear-pdv-sales.mjs",
+        "tasks:sync-ods": "node --experimental-sqlite scripts/sync-tarefas-ods.mjs"
+    },
+    "dependencies": {
+        "mysql2": "^3.20.0",
+        "pinia": "^3.0.3",
+        "vue": "^3.5.13",
+        "vue-router": "^4.5.1"
+    },
+    "devDependencies": {
+        "@types/node": "^24.0.1",
+        "@vitejs/plugin-vue": "^5.2.3",
+        "firebase-admin": "^13.7.0",
+        "typescript": "^5.8.3",
+        "vite": "^6.3.5"
+    }
+}

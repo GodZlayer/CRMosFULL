@@ -1,0 +1,19 @@
+{
+  "collections": {
+    "catalogItems": ["estoque"]
+  },
+  "fields": {
+    "catalogItems": {
+      "sku": ["codigo"],
+      "name": ["nome"],
+      "category": ["categoriaNome"],
+      "description": ["observacoes", "descricao"],
+      "stockQuantity": ["quantidade"],
+      "costAmount": ["precoCusto"],
+      "priceAmount": ["precoVenda"],
+      "createdAt": ["createdAt"],
+      "updatedAt": ["updatedAt", "createdAt"],
+      "itemCondition": ["condicao"]
+    }
+  }
+}
