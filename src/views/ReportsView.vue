@@ -103,7 +103,7 @@
     <MetricCard
      title="Estoque"
      :value="currency(payload?.summary.totalInventoryValue)"
-     hint="Valor dos itens carregados no relatorio."
+     :hint="`Estoque real atual: ${Number(payload?.summary.totalInventoryUnits || 0)} unidade(s) em ${Number(payload?.summary.totalInventoryItems || 0)} codigo(s).`"
      icon="fa-solid fa-warehouse"
      tone="warning"
     />
@@ -236,7 +236,8 @@
       Financeiro oficial: entradas e saidas do recorte (excluindo compras de estoque).
      </caption>
      <thead>
-      <tr>
+     <tr>
+       <th>Ação</th>
        <th>Tipo</th>
        <th>Categoria</th>
        <th>Descricao</th>
@@ -246,6 +247,16 @@
      </thead>
      <tbody>
       <tr v-for="entry in (payload?.finance || [])" :key="entry.id">
+       <td>
+        <button
+         v-if="canRevertFinanceEntry(entry)"
+         class="btn btn-sm btn-outline-danger rounded-pill"
+         :disabled="Number(revertingTransactionId || 0) === Number(entry.id || 0)"
+         @click="revertFinanceRow(entry)">
+         {{ Number(revertingTransactionId || 0) === Number(entry.id || 0) ? "Desfazendo..." : "Reverter" }}
+        </button>
+        <span v-else>-</span>
+       </td>
        <td>{{ entry.entry_type }}</td>
        <td>{{ entry.category }}</td>
        <td>{{ entry.description }}</td>
@@ -262,7 +273,8 @@
       Compras e reposicoes: despesas de estoque.
      </caption>
      <thead>
-      <tr>
+     <tr>
+       <th>Ação</th>
        <th>Tipo</th>
        <th>Categoria</th>
        <th>Descricao</th>
@@ -272,6 +284,16 @@
      </thead>
      <tbody>
       <tr v-for="entry in (payload?.purchases || [])" :key="`purchase-${entry.id}`">
+       <td>
+        <button
+         v-if="canRevertFinanceEntry(entry)"
+         class="btn btn-sm btn-outline-danger rounded-pill"
+         :disabled="Number(revertingTransactionId || 0) === Number(entry.id || 0)"
+         @click="revertFinanceRow(entry)">
+         {{ Number(revertingTransactionId || 0) === Number(entry.id || 0) ? "Desfazendo..." : "Reverter" }}
+        </button>
+        <span v-else>-</span>
+       </td>
        <td>{{ entry.entry_type }}</td>
        <td>{{ entry.category }}</td>
        <td>{{ entry.description }}</td>
@@ -392,14 +414,23 @@ function financeAccountLabel(entry: any) {
  return String(entry.cash_account_name || entry.cash_account_code || entry.payment_method || "-");
 }
 
+function parseFinancePayload(entry: any) {
+ try {
+  return JSON.parse(String(entry?.raw_payload || "{}"));
+ } catch {
+  return {};
+ }
+}
+
 function canRevertFinanceEntry(entry: any) {
  const financeEntryId = Number(entry.finance_entry_id || entry.id || 0);
  const replenishmentId = Number(entry.replenishment_id || 0);
  if (replenishmentId > 0) {
   return true;
  }
- const source = String(entry.raw_payload || "");
- return financeEntryId > 0 && !/ORDER_COMPLETION|PDV_PAYMENT/.test(source);
+ const rawPayload = parseFinancePayload(entry);
+ const source = String(rawPayload.source || rawPayload.origin || "").toUpperCase();
+ return financeEntryId > 0 && !["ORDER_COMPLETION", "PDV_PAYMENT"].includes(source);
 }
 
 async function revertFinanceRow(entry: any) {

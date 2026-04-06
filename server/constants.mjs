@@ -73,6 +73,7 @@ export const FINANCE_CATEGORY_SEEDS = {
   RECEITA: [
     "Venda de produto",
     "Venda de serviço",
+    "Venda mista PDV",
     "Visita técnica",
     "Recebimento de OS",
     "Outras receitas"
