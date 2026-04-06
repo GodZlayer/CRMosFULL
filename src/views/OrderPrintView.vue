@@ -551,10 +551,10 @@ async function printWindow() {
   pointer-events: none;
   z-index: 0;
  }
- .print-watermark__logo {
+.print-watermark__logo {
   display: block;
   width: min(78%, 320px);
-  opacity: 0.08;
+  opacity: 0.16;
   object-fit: contain;
  }
  .copy-meta {
@@ -706,7 +706,7 @@ onMounted(async () => {
 .print-watermark__logo {
  display: block !important;
  width: min(78%, 420px);
- opacity: 0.08;
+ opacity: 0.16;
  object-fit: contain;
 }
 
@@ -828,7 +828,7 @@ onMounted(async () => {
 
  .print-watermark__logo {
   width: min(74%, 300px);
-  opacity: 0.06;
+  opacity: 0.16;
  }
 
  .copy-meta {
