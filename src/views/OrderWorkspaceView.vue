@@ -55,7 +55,7 @@
  <div class="mb-2"><strong>Estado físico:</strong> {{ orderView.extras || "Sem observações físicas" }}</div>
  <div class="mb-3"><strong>Anotações:</strong> {{ orderView.cleanNotes || "Sem anotações adicionais" }}</div>
  <div class="border-top pt-3 mt-3">
- <div class="mb-2"><strong>Previsão atual:</strong> {{ dateLabel(orderView.due_date) }}</div>
+<div class="mb-2"><strong>Previsão atual:</strong> {{ dueDateLabel(orderView.due_date) }}</div>
  <label class="form-label fw-semibold required-label">Ajustar previsão</label>
  <div class="d-flex flex-wrap gap-2">
  <input v-model="dueDateForm" type="date" class="form-control rounded-4" style="max-width: 220px" required />
@@ -71,31 +71,76 @@
  <div class="col-xl-4">
  <div class="panel-card h-100">
  <div class="small fw-semibold mb-3">Orçamento e aprovação</div>
- <div class="mb-2"><strong>Orçamento automático:</strong> {{ currency(orderView.quote_amount) }}</div>
+ <div class="mb-2"><strong>Orçamento calculado:</strong> {{ quoteLabel(calculatedQuoteAmount) }}</div>
+ <div class="mb-2"><strong>Orçamento atual:</strong> {{ quoteLabel(orderView.quote_amount) }}</div>
  <div class="mb-2"><strong>Serviços:</strong> {{ currency(orderView.service_amount) }}</div>
  <div class="mb-2"><strong>Total da OS:</strong> {{ currency(orderView.total_amount) }}</div>
  <div class="mb-2"><strong>Aprovação:</strong> {{ approvalStatusLabel(orderView.approval_status) }}</div>
  <div class="mb-2"><strong>Status:</strong> {{ orderStatusLabel(orderView.order_status) }}</div>
+ <div class="border-top pt-3 mt-3">
+ <label class="form-label fw-semibold required-label">Ajustar orçamento manual</label>
+ <div class="d-flex flex-wrap gap-2 align-items-end">
+ <input v-model.number="manualQuoteForm" type="number" min="0" step="0.01" class="form-control rounded-4" style="max-width: 220px" required />
+ <button class="btn btn-outline-primary rounded-pill" @click="saveManualQuote" :disabled="manualQuoteForm === null || manualQuoteForm === undefined || loading || savingQuote">
+ <i class="fa-solid fa-money-bill-wave me-2"></i>
+ Salvar orçamento
+ </button>
+ </div>
+ <div class="small mt-2">Use este campo para sobrescrever manualmente o orçamento já orçado sem recriar a OS.</div>
+ </div>
  </div>
  </div>
  <div class="col-xl-4">
  <div class="panel-card h-100">
- <div class="small fw-semibold mb-3">Anexo principal</div>
- <div v-if="orderView.photo_url && !isPdfUrl(orderView.photo_url)" class="text-center">
- <img :src="orderView.photo_url" alt="Anexo da OS" class="img-fluid rounded-4 border" style="max-height: 260px; object-fit: contain;" />
+ <div class="small fw-semibold mb-3">Anexos da OS</div>
+ <div v-if="attachmentGroups.length" class="d-grid gap-3 mb-3">
+ <div v-for="group in attachmentGroups" :key="group.label" class="d-grid gap-2">
+ <div class="small fw-semibold">{{ group.label }}</div>
+ <div v-for="attachment in group.items" :key="attachment.id || attachment.file_path" class="rounded-4 border border-secondary-subtle bg-light-subtle p-3">
+ <div v-if="!isPdfUrl(attachment.url)" class="text-center">
+ <img :src="attachment.url" alt="Anexo da OS" class="img-fluid rounded-4 border" style="max-height: 180px; object-fit: contain;" />
  </div>
- <div v-else-if="orderView.photo_url" class="d-grid gap-3 text-center">
- <div class="rounded-4 border border-secondary-subtle bg-light-subtle p-4">
+ <div v-else class="d-grid gap-3 text-center">
+ <div class="rounded-4 border border-secondary-subtle bg-white p-4">
  <i class="fa-solid fa-file-pdf fs-1 text-danger"></i>
- <div class="fw-semibold mt-3">PDF anexado</div>
+ <div class="fw-semibold mt-3">{{ attachment.file_name || "PDF anexado" }}</div>
  </div>
- <a :href="orderView.photo_url" target="_blank" rel="noreferrer" class="btn btn-outline-secondary rounded-pill">
+ </div>
+ <div class="d-flex justify-content-between align-items-center gap-2 mt-3">
+ <div class="small text-body-secondary">{{ attachment.file_name || "Anexo" }}</div>
+ <a :href="attachment.url" target="_blank" rel="noreferrer" class="btn btn-outline-secondary rounded-pill">
  <i class="fa-solid fa-up-right-from-square me-2"></i>
- Abrir PDF
+ Abrir
  </a>
  </div>
- <div v-else class="rounded-4 border border-secondary-subtle bg-light-subtle p-4 text-center">
+ </div>
+ </div>
+ </div>
+ <div v-else class="rounded-4 border border-secondary-subtle bg-light-subtle p-4 text-center mb-3">
  Nenhum anexo enviado para esta OS.
+ </div>
+ <div class="border-top pt-3 mt-3 d-grid gap-3">
+ <div class="small fw-semibold">Adicionar mais anexos</div>
+ <MultiMediaCaptureField
+  v-model="attachmentUploads"
+  label="Anexos"
+  helper="Selecione uma ou mais imagens ou PDFs no mesmo campo."
+  :max-per-selection="5"
+  :max-total="15"
+  :existing-count="orderView.attachments?.length || 0"
+ />
+ <div v-if="attachmentUploads.length" class="d-grid gap-2">
+  <div class="small fw-semibold">Anexos deste envio</div>
+  <div v-for="(attachment, index) in attachmentUploads" :key="`${attachment.name}-${index}`" class="rounded-4 border border-secondary-subtle bg-light-subtle p-3">
+   <div class="small text-truncate">{{ attachment.name || `Anexo ${index + 1}` }}</div>
+  </div>
+ </div>
+ <div class="d-flex justify-content-end">
+  <button type="button" class="btn btn-outline-primary rounded-pill" :disabled="!attachmentUploads.length || savingAttachments" @click="saveAttachmentUploads">
+   <i class="fa-solid fa-paperclip me-2"></i>
+   Salvar anexos
+  </button>
+ </div>
  </div>
  </div>
  </div>
@@ -292,6 +337,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppShell from "../components/AppShell.vue";
+import MultiMediaCaptureField from "../components/MultiMediaCaptureField.vue";
 import MetricCard from "../components/MetricCard.vue";
 import PhoneLink from "../components/PhoneLink.vue";
 import TimelineCalendar from "../components/TimelineCalendar.vue";
@@ -300,18 +346,22 @@ import { currency, labelFor } from "../services/format";
 import { splitOrderNotes } from "../services/orderNotes";
 import { notifyError, notifySuccess } from "../services/ui";
 import { useSessionStore } from "../stores/session";
-import type { CatalogItem, OrderTimelinePayload } from "../services/types";
+import type { CatalogItem, MediaUploadPayload, OrderTimelinePayload } from "../services/types";
 
 const route = useRoute();
 const router = useRouter();
 const session = useSessionStore();
 const loading = ref(false);
+const savingQuote = ref(false);
+const savingAttachments = ref(false);
 const timelineData = ref<OrderTimelinePayload | null>(null);
 const catalogItems = ref<CatalogItem[]>([]);
 const addingRequestedProduct = ref(false);
 const addingStockItem = ref(false);
 const timelineSection = ref<HTMLElement | null>(null);
 const dueDateForm = ref("");
+const manualQuoteForm = ref<number | null>(null);
+const attachmentUploads = ref<MediaUploadPayload[]>([]);
 const eventTypeOptions = [
  { code: "DIAGNOSTICO", label: "Diagnóstico", color: "#0d6efd" },
  { code: "SERVICO_EXECUTADO", label: "Serviço executado", color: "#198754" },
@@ -359,6 +409,43 @@ const timelineEntries = computed(() =>
  }))
 );
 
+const calculatedQuoteAmount = computed(() => {
+ const order = orderView.value;
+ if (!order) {
+  return null;
+ }
+ const itemsTotal = (order.items || []).reduce(
+  (total, item) => total + Number(item.unit_price || item.unitPrice || 0) * Number(item.quantity || 1),
+  0
+ );
+ const servicesTotal = (order.services || []).reduce(
+  (total, service) => total + Number(service.line_total || service.lineTotal || ((service.unit_price || service.unitPrice || 0) * Number(service.quantity || 1))),
+  0
+ );
+ const requestedTotal = (order.requested_products || []).reduce(
+  (total, item) => total + Number(item.sale_price || item.salePrice || 0) * Number(item.quantity || 1),
+  0
+ );
+ return itemsTotal + servicesTotal + requestedTotal;
+});
+
+const attachmentGroups = computed(() => {
+ const attachments = orderView.value?.attachments || [];
+ const groups = new Map<string, typeof attachments>();
+ attachments.forEach((attachment, index) => {
+  const date = String(attachment.created_at || "").slice(0, 10);
+  const label = index === 0 && !date
+   ? "Anexo inicial"
+   : date
+    ? `Anexos de ${dateLabel(date)}`
+    : "Anexos";
+  const current = groups.get(label) || [];
+  current.push(attachment);
+  groups.set(label, current);
+ });
+ return [...groups.entries()].map(([label, items]) => ({ label, items }));
+});
+
 function orderStatusLabel(code: string) {
  return labelFor(code, session.meta?.orderStatuses || []);
 }
@@ -369,7 +456,7 @@ function approvalStatusLabel(code: string) {
 
 function dateLabel(value: string | null | undefined) {
  if (!value) {
- return "Não informado";
+ return "Sem previsão";
  }
  const raw = String(value);
  const dateOnly = raw.slice(0, 10);
@@ -382,6 +469,14 @@ function dateLabel(value: string | null | undefined) {
  return raw;
  }
  return parsed.toLocaleString("pt-BR");
+}
+
+function dueDateLabel(value: string | null | undefined) {
+ return value ? dateLabel(value) : "Sem previsão";
+}
+
+function quoteLabel(value: number | null | undefined) {
+ return value === null || value === undefined ? "Sem orçamento" : currency(value);
 }
 
 function minutesLabel(minutes: number) {
@@ -441,6 +536,79 @@ async function saveDueDate() {
  await notifySuccess("Previsão atualizada", "A nova previsão manual foi salva na OS.");
  } catch (error) {
  await notifyError(error);
+ }
+}
+
+async function saveAttachmentUploads() {
+ if (!orderView.value) {
+  return;
+ }
+ const uploads = attachmentUploads.value;
+ if (!uploads.length) {
+  return;
+ }
+ try {
+  savingAttachments.value = true;
+  const response = await api.addOrderAttachments(orderView.value.id, { uploads });
+  if (timelineData.value) {
+   timelineData.value = { ...timelineData.value, order: response.data };
+  }
+  attachmentUploads.value = [];
+  await notifySuccess("Anexos adicionados", "Os novos arquivos foram vinculados à OS.");
+ } catch (error) {
+  await notifyError(error);
+ } finally {
+  savingAttachments.value = false;
+ }
+}
+
+async function saveManualQuote() {
+ if (!orderView.value) {
+  return;
+ }
+ try {
+  const quoteAmount = Math.max(0, Number(manualQuoteForm.value ?? 0));
+  savingQuote.value = true;
+  const response = await api.saveOrder({
+   id: orderView.value.id,
+   clientId: orderView.value.client_id,
+   equipmentName: orderView.value.equipment,
+   equipment: orderView.value.equipment,
+   orderStatus: orderView.value.order_status,
+   approvalStatus: orderView.value.approval_status,
+   dueDate: orderView.value.due_date,
+   withoutDueDate: !orderView.value.due_date,
+   defect: orderView.value.defect,
+   extras: orderView.value.extras,
+   quoteAmount,
+   withoutQuote: false,
+   paymentMethod: orderView.value.payment_method,
+   notes: orderView.value.notes,
+   items: (orderView.value.items || []).map((item) => ({
+    catalogItemId: item.catalog_item_id || item.catalogItemId,
+    quantity: item.quantity
+   })),
+   services: (orderView.value.services || []).map((service) => ({
+    serviceId: service.service_id || service.serviceId,
+    quantity: service.quantity
+   })),
+   requestedProducts: (orderView.value.requested_products || []).map((item) => ({
+    id: item.id,
+    name: item.product_name || item.name || "",
+    quantity: item.quantity,
+    salePrice: item.sale_price || item.salePrice || 0,
+    status: item.status
+   }))
+  });
+  if (timelineData.value) {
+   timelineData.value = { ...timelineData.value, order: response.data };
+  }
+  manualQuoteForm.value = Number(response.data.quote_amount || 0);
+  await notifySuccess("Orçamento atualizado", "O valor manual da OS foi salvo.");
+ } catch (error) {
+  await notifyError(error);
+ } finally {
+  savingQuote.value = false;
  }
 }
 
@@ -555,6 +723,8 @@ watch(
  orderView,
  (value) => {
  dueDateForm.value = value?.due_date?.slice(0, 10) || "";
+ manualQuoteForm.value = value?.quote_amount ?? calculatedQuoteAmount.value ?? 0;
+ attachmentUploads.value = [];
  },
  { immediate: true }
 );

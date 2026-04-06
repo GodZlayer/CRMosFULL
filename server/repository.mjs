@@ -1,5 +1,5 @@
 ﻿import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -121,6 +121,7 @@ export function createRepository(options = {}) {
     deleteService,
     listOrders,
     getOrder,
+    addOrderAttachments,
     deleteOrder,
     saveOrder,
     listFinanceCategories,
@@ -395,6 +396,16 @@ export function createRepository(options = {}) {
         FOREIGN KEY (finance_entry_id) REFERENCES finance_entries(id) ON DELETE SET NULL
       );
 
+      CREATE TABLE IF NOT EXISTS order_attachments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL,
+        file_path TEXT NOT NULL,
+        file_name TEXT NOT NULL DEFAULT '',
+        mime_type TEXT DEFAULT '',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS finance_entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         entry_type TEXT NOT NULL,
@@ -468,6 +479,9 @@ export function createRepository(options = {}) {
     addColumnIfMissing('order_requested_products', 'finance_entry_id', 'INTEGER DEFAULT NULL');
     addColumnIfMissing('order_requested_products', 'purchased_at', "TEXT DEFAULT ''");
     addColumnIfMissing('order_requested_products', 'denied_at', "TEXT DEFAULT ''");
+    addColumnIfMissing('order_attachments', 'file_name', "TEXT NOT NULL DEFAULT ''");
+    addColumnIfMissing('order_attachments', 'mime_type', "TEXT DEFAULT ''");
+    syncLegacyOrderAttachments();
     migrateCatalogItemsSchema();
     run("UPDATE catalog_items SET location_type = CASE WHEN COALESCE(is_store_inventory, 0) = 1 THEN 'INVENTARIO' ELSE 'ESTOQUE' END WHERE location_type IS NULL OR location_type = ''");
     seedFinanceCategories();
@@ -2048,14 +2062,16 @@ export function createRepository(options = {}) {
       `,
       { orderId }
     );
+    const attachments = listOrderAttachments(orderId, order.photo_path);
 
     return {
       ...order,
       items,
       services,
       requested_products: requestedProducts,
+      attachments,
       estimated_total_minutes: services.reduce((total, item) => Math.max(total, Number(item.estimated_minutes || 0)), 0),
-      photo_url: order.photo_path ? `/uploads/${order.photo_path}` : ""
+      photo_url: order.photo_path ? `/uploads/${order.photo_path}` : (attachments[0]?.url || "")
     };
   }
 
@@ -2075,9 +2091,12 @@ export function createRepository(options = {}) {
     const orderDate = normalizeText(payload.openedAt, existing?.opened_at || getLocalDateString());
     const timestamp = nowIso();
     const code = existing?.code ?? createNextOrderCode(orderDate);
-    const photoPath = payload.photoUpload
-      ? saveOrderPhoto(code, orderDate, payload.photoUpload.base64, payload.photoUpload.name)
-      : existing?.photo_path ?? "";
+    const queuedUploads = [
+      ...(Array.isArray(payload.photoUploads) ? payload.photoUploads : []),
+      ...(payload.photoUpload?.base64 ? [payload.photoUpload] : [])
+    ].filter((item) => item?.base64);
+    validateOrderAttachmentLimits(existing?.id ?? null, queuedUploads.length);
+    const photoPath = existing?.photo_path ?? "";
 
     const preparedItems = normalized.items.map((item) => {
       const catalogItem = get("SELECT * FROM catalog_items WHERE id = :id", { id: item.catalogItemId });
@@ -2117,9 +2136,12 @@ export function createRepository(options = {}) {
     const serviceAmount = preparedServices.reduce((total, item) => total + item.lineTotal, 0);
     const totalEstimatedMinutes = preparedServices.reduce((total, item) => Math.max(total, item.estimatedMinutes), 0);
     const requestedProductsSubtotal = requestedProducts.reduce((total, item) => total + Number(item.salePrice || 0) * Number(item.quantity || 1), 0);
-    const quoteAmount = partsSubtotal + serviceAmount + requestedProductsSubtotal;
-    const totalAmount = Math.max(0, quoteAmount - Number(normalized.discountAmount || 0));
-    const dueDate = normalized.dueDate || existing?.due_date || computeDueDateFromMinutes(totalEstimatedMinutes, orderDate);
+    const calculatedQuoteAmount = partsSubtotal + serviceAmount + requestedProductsSubtotal;
+    const withoutQuote = payload.withoutQuote === true || Number(payload.withoutQuote) === 1;
+    const withoutDueDate = payload.withoutDueDate === true || Number(payload.withoutDueDate) === 1;
+    const quoteAmount = withoutQuote ? null : (normalized.quoteAmount ?? calculatedQuoteAmount);
+    const totalAmount = Math.max(0, (quoteAmount ?? calculatedQuoteAmount) - Number(normalized.discountAmount || 0));
+    const dueDate = withoutDueDate ? "" : (normalized.dueDate || existing?.due_date || computeDueDateFromMinutes(totalEstimatedMinutes, orderDate));
 
     const timestamps = {
       openedAt: orderDate,
@@ -2302,7 +2324,66 @@ export function createRepository(options = {}) {
         applyStockForOrder(orderId);
       }
 
+      if (queuedUploads.length) {
+        const savedAttachments = insertOrderAttachments(orderId, code, orderDate, queuedUploads);
+        if (!orderPayload.photoPath && savedAttachments.length) {
+          run(
+            `
+              UPDATE orders
+              SET photo_path = :photoPath,
+                  updated_at = :updatedAt
+              WHERE id = :id
+            `,
+            {
+              id: orderId,
+              photoPath: savedAttachments[0].file_path,
+              updatedAt: nowIso()
+            }
+          );
+        }
+      }
+
       return getOrder(orderId);
+    });
+  }
+
+  function addOrderAttachments(orderId, uploads = []) {
+    const order = get(
+      `
+        SELECT id, code, opened_at, photo_path
+        FROM orders
+        WHERE id = :id
+      `,
+      { id: Number(orderId) }
+    );
+    if (!order) {
+      throw new Error("OS nao encontrada.");
+    }
+
+    const normalizedUploads = (Array.isArray(uploads) ? uploads : [uploads]).filter((item) => item?.base64);
+    if (!normalizedUploads.length) {
+      throw new Error("Nenhum anexo foi informado.");
+    }
+    validateOrderAttachmentLimits(order.id, normalizedUploads.length);
+
+    return transaction(() => {
+      const savedAttachments = insertOrderAttachments(order.id, order.code, order.opened_at, normalizedUploads);
+      if (!order.photo_path && savedAttachments.length) {
+        run(
+          `
+            UPDATE orders
+            SET photo_path = :photoPath,
+                updated_at = :updatedAt
+            WHERE id = :id
+          `,
+          {
+            id: order.id,
+            photoPath: savedAttachments[0].file_path,
+            updatedAt: nowIso()
+          }
+        );
+      }
+      return getOrder(order.id);
     });
   }
 
@@ -2394,6 +2475,131 @@ export function createRepository(options = {}) {
     writeFileSync(targetFile, Buffer.from(base64Content, "base64"));
 
     return join(relativeDir, `principal${extension}`).replaceAll("\\", "/");
+  }
+
+  function saveOrderAttachment(orderCode, orderDate, base64, fileName = "anexo.jpg", index = 1) {
+    const { year, month } = getLocalDateParts(orderDate);
+    const safeName = normalizeText(fileName, `anexo-${index}.jpg`).replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const extension = extname(safeName) || ".jpg";
+    const relativeDir = join("os", year, month, orderCode);
+    const absoluteDir = join(uploadsRoot, relativeDir);
+    mkdirSync(absoluteDir, { recursive: true });
+
+    const base64Content = String(base64).includes(",") ? String(base64).split(",").pop() : String(base64);
+    const targetName = `anexo-${Date.now()}-${index}${extension}`;
+    const targetFile = join(absoluteDir, targetName);
+    writeFileSync(targetFile, Buffer.from(base64Content, "base64"));
+
+    return join(relativeDir, targetName).replaceAll("\\", "/");
+  }
+
+  function insertOrderAttachments(orderId, orderCode, orderDate, uploads = []) {
+    const timestamp = nowIso();
+    return uploads.map((upload, index) => {
+      const filePath = saveOrderAttachment(orderCode, orderDate, upload.base64, upload.name, index + 1);
+      run(
+        `
+          INSERT INTO order_attachments (order_id, file_path, file_name, mime_type, created_at)
+          VALUES (:orderId, :filePath, :fileName, :mimeType, :createdAt)
+        `,
+        {
+          orderId,
+          filePath,
+          fileName: normalizeText(upload.name, `anexo-${index + 1}`),
+          mimeType: normalizeText(upload.mimeType, ""),
+          createdAt: timestamp
+        }
+      );
+      return { file_path: filePath };
+    });
+  }
+
+  function listOrderAttachments(orderId, legacyPhotoPath = "") {
+    const attachments = all(
+      `
+        SELECT id, file_path, file_name, mime_type, created_at
+        FROM order_attachments
+        WHERE order_id = :orderId
+        ORDER BY id ASC
+      `,
+      { orderId }
+    ).map((item) => ({
+      ...item,
+      url: item.file_path ? `/uploads/${item.file_path}` : ""
+    }));
+
+    if (!attachments.length && legacyPhotoPath) {
+      return [
+        {
+          id: 0,
+          file_path: legacyPhotoPath,
+          file_name: basename(legacyPhotoPath),
+          mime_type: "",
+          created_at: "",
+          url: `/uploads/${legacyPhotoPath}`
+        }
+      ];
+    }
+
+    return attachments;
+  }
+
+  function countOrderAttachments(orderId) {
+    return Number(
+      get("SELECT COUNT(*) AS total FROM order_attachments WHERE order_id = :orderId", { orderId })?.total || 0
+    );
+  }
+
+  function validateOrderAttachmentLimits(orderId, uploadCount) {
+    const normalizedUploadCount = Number(uploadCount || 0);
+    if (normalizedUploadCount <= 0) {
+      return;
+    }
+    if (normalizedUploadCount > 5) {
+      throw new Error("Cada envio permite no máximo 5 anexos.");
+    }
+    const existingCount = orderId ? countOrderAttachments(orderId) : 0;
+    if (existingCount + normalizedUploadCount > 15) {
+      throw new Error("Cada OS permite no máximo 15 anexos no total.");
+    }
+  }
+
+  function syncLegacyOrderAttachments() {
+    const orders = all(
+      `
+        SELECT id, photo_path
+        FROM orders
+        WHERE photo_path IS NOT NULL AND photo_path != ''
+      `
+    );
+    const timestamp = nowIso();
+    for (const order of orders) {
+      const existing = get(
+        `
+          SELECT id
+          FROM order_attachments
+          WHERE order_id = :orderId AND file_path = :filePath
+        `,
+        {
+          orderId: order.id,
+          filePath: order.photo_path
+        }
+      );
+      if (!existing) {
+        run(
+          `
+            INSERT INTO order_attachments (order_id, file_path, file_name, mime_type, created_at)
+            VALUES (:orderId, :filePath, :fileName, '', :createdAt)
+          `,
+          {
+            orderId: order.id,
+            filePath: order.photo_path,
+            fileName: basename(order.photo_path),
+            createdAt: timestamp
+          }
+        );
+      }
+    }
   }
 
   function listFinanceCategories(entryType = "") {
@@ -2728,6 +2934,7 @@ export function createRepository(options = {}) {
     const orders = listOrders(filters);
     const finance = listFinanceEntries(filters);
     const inventory = listCatalogItems(filters);
+    const globalInventory = listCatalogItems({ activeOnly: true }).filter((item) => !String(item.deleted_at || "").trim());
 
     return {
       summary: {
@@ -2735,7 +2942,9 @@ export function createRepository(options = {}) {
         totalOrderValue: orders.reduce((sum, order) => sum + order.total_amount, 0),
         totalRevenue: finance.filter((entry) => entry.entry_type === "RECEITA").reduce((sum, entry) => sum + entry.amount, 0),
         totalExpenses: finance.filter((entry) => entry.entry_type === "DESPESA").reduce((sum, entry) => sum + entry.amount, 0),
-        totalInventoryValue: inventory.reduce((sum, item) => sum + item.stock_value, 0)
+        totalInventoryValue: globalInventory.reduce((sum, item) => sum + Number(item.stock_value || 0), 0),
+        totalInventoryUnits: globalInventory.reduce((sum, item) => sum + Number(item.stock_quantity || 0), 0),
+        totalInventoryItems: globalInventory.length
       },
       orders,
       finance,
@@ -2743,11 +2952,6 @@ export function createRepository(options = {}) {
     };
   }
 }
-
-
-
-
-
 
 
 

@@ -2394,6 +2394,27 @@ export function createAppRepository(options = {}) {
     };
   }
 
+  function findPosSaleByFinanceEntry(financeEntry) {
+    if (!financeEntry) {
+      return null;
+    }
+
+    const description = normalizeText(financeEntry.description);
+    const codeMatch = description.match(/^Venda\s+(PDV-\d{8}-\d{4})$/i);
+    if (!codeMatch) {
+      return null;
+    }
+
+    return get(
+      `
+        SELECT id
+        FROM pos_sales
+        WHERE code = :code
+      `,
+      { code: codeMatch[1] }
+    );
+  }
+
   function refreshCashSessionExpectedAmount(sessionId) {
     if (!sessionId) {
       return;
@@ -2599,11 +2620,7 @@ export function createAppRepository(options = {}) {
       const payments = Array.isArray(payload.payments) && payload.payments.length
         ? payload.payments
         : [{ paymentMethod: normalizeText(payload.paymentMethod, "CAIXINHA_LOJA") || "CAIXINHA_LOJA", amount: totalAmount }];
-      const saleFinanceCategory = preparedItems.some((item) => item.itemType === "SERVICE") && !preparedItems.some((item) => item.itemType === "PRODUCT")
-        ? "Venda de servico"
-        : preparedItems.some((item) => item.itemType === "SERVICE")
-          ? "Venda mista PDV"
-          : "Venda de produto";
+      const saleFinanceCategory = resolvePosSaleFinanceCategory(preparedItems);
 
       for (const payment of payments) {
         const normalizedPaymentMethod = normalizeText(payment.paymentMethod, "CAIXINHA_LOJA") || "CAIXINHA_LOJA";
@@ -2649,6 +2666,12 @@ export function createAppRepository(options = {}) {
         orderId: null,
         storeId: store.id,
         cashAccountId: resolveCashAccountId(store.id, payments[0]?.cashAccountId, payments[0]?.paymentMethod),
+        rawPayload: {
+          source: "POS_SALE",
+          saleId,
+          saleCode: code,
+          category: saleFinanceCategory
+        },
         registerStoreCashMovement: false,
         _actor: actor
       });
@@ -2694,7 +2717,6 @@ export function createAppRepository(options = {}) {
           SELECT id
           FROM finance_entries
           WHERE entry_type = 'RECEITA'
-            AND category = 'Venda de produto'
             AND description = :description
         `,
         { description: `Venda ${beforeState.code}` }
@@ -3311,10 +3333,14 @@ export function createAppRepository(options = {}) {
 
     const rawPayload = safeParseJson(financeEntry.raw_payload, {});
     const source = normalizeText(rawPayload.source || rawPayload.origin).toUpperCase();
+    const linkedPosSale = source === "POS_SALE" ? { id: Number(rawPayload.saleId || 0) } : findPosSaleByFinanceEntry(financeEntry);
     if (source.startsWith("CATALOG_")) {
       throw new Error("Nao foi possivel localizar a reposicao de estoque vinculada. A reversao financeira isolada foi bloqueada para evitar divergencia no estoque.");
     }
-    if (["ORDER_COMPLETION", "PDV_PAYMENT"].includes(source) || ["Recebimento de OS", "Venda de produto", "Venda de servico", "Venda mista PDV"].includes(String(financeEntry.category || ""))) {
+    if (linkedPosSale?.id) {
+      return deletePosSale(Number(linkedPosSale.id), { actor });
+    }
+    if (["ORDER_COMPLETION", "PDV_PAYMENT"].includes(source) || ["Recebimento de OS", "Venda de produto", "Venda de serviço", "Venda de servico", "Venda mista PDV"].includes(String(financeEntry.category || ""))) {
       throw new Error("Essa transacao nao pode ser revertida por esta tela. Reverta a origem operacional correspondente.");
     }
 
@@ -4367,6 +4393,18 @@ export function createAppRepository(options = {}) {
       return "Frete";
     }
     return "Operacional";
+  }
+
+  function resolvePosSaleFinanceCategory(items = []) {
+    const hasService = items.some((item) => item.itemType === "SERVICE");
+    const hasProduct = items.some((item) => item.itemType === "PRODUCT");
+    if (hasService && !hasProduct) {
+      return "Venda de serviço";
+    }
+    if (hasService) {
+      return "Venda mista PDV";
+    }
+    return "Venda de produto";
   }
 
   function buildHeaderMap(row = []) {
@@ -5885,6 +5923,9 @@ export function createAppRepository(options = {}) {
 
   function getReports(filters = {}) {
     const basePayload = baseReports(filters);
+    const globalInventory = repo
+      .listCatalogItems({ activeOnly: true })
+      .filter((item) => !String(item.deleted_at || "").trim());
     const posSales = listPosSales(filters);
     const financeWorkbook = getFinanceWorkbookView(filters);
     const financeEntries = financeWorkbook.entriesAndExpenses || [];
@@ -5912,6 +5953,9 @@ export function createAppRepository(options = {}) {
         totalRevenue,
         totalExpenses: officialExpenseTotal > 0 ? officialExpenseTotal : rawReportedExpenses,
         totalPurchaseExpenses,
+        totalInventoryValue: globalInventory.reduce((sum, item) => sum + Number(item.stock_value || 0), 0),
+        totalInventoryUnits: globalInventory.reduce((sum, item) => sum + Number(item.stock_quantity || 0), 0),
+        totalInventoryItems: globalInventory.length,
         totalPdvValue,
         totalEntries,
         officialCashBalance: Number(financeWorkbook.cashManagement?.currentBalance?.value || 0),
@@ -5926,9 +5970,6 @@ export function createAppRepository(options = {}) {
     };
   }
 }
-
-
-
 
 
 

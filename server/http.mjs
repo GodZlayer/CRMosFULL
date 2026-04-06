@@ -325,6 +325,13 @@ export function createApiServer(repo, options = {}) {
         return sendJson(response, 200, { data: repo.addOrderStockItem(id, { ...body, storeId: store?.id || null, _store: store, _actor: user }) });
       }
 
+      if (pathname.match(/^\/api\/orders\/\d+\/attachments$/) && method === "POST") {
+        ensureRole(user, ["ADMIN", "GERENTE", "ATENDENTE", "TECNICO"]);
+        const id = Number(pathname.split("/")[3]);
+        const body = await readJsonBody(request);
+        return sendJson(response, 200, { data: repo.addOrderAttachments(id, body.uploads || []) });
+      }
+
       if (pathname.match(/^\/api\/orders\/\d+$/) && method === "PUT") {
         ensureRole(user, ["ADMIN", "GERENTE", "ATENDENTE", "TECNICO"]);
         const id = Number(pathname.split("/").pop());
@@ -678,6 +685,5 @@ function serveUpload(pathname, response, uploadsRoot) {
   });
   createReadStream(absolutePath).pipe(response);
 }
-
 
 

@@ -110,7 +110,7 @@
  <div v-if="selectedOrder.accessories_other" class="mb-2"><strong>Outros acessórios:</strong> {{ selectedOrder.accessories_other }}</div>
  <div class="mb-2"><strong>Extras:</strong> {{ selectedOrder.extras || 'Sem extras' }}</div>
  <div class="mb-2"><strong>Observacoes:</strong> {{ selectedOrder.clean_notes || 'Sem observacoes' }}</div>
- <div class="mb-2"><strong>Previsão:</strong> {{ dateLabel(selectedOrder.due_date) }}</div>
+<div class="mb-2"><strong>Previsão:</strong> {{ dueDateLabel(selectedOrder.due_date) }}</div>
  </div>
  </div>
  <div class="col-lg-4">
@@ -118,7 +118,7 @@
  <div class="small fw-semibold mb-3">Status e valores</div>
  <div class="mb-2"><strong>Status:</strong> {{ orderStatusLabel(selectedOrder.order_status) }}</div>
  <div class="mb-2"><strong>Aprovação:</strong> {{ approvalStatusLabel(selectedOrder.approval_status) }}</div>
- <div class="mb-2"><strong>Orçamento:</strong> {{ currency(selectedOrder.quote_amount) }}</div>
+<div class="mb-2"><strong>Orçamento:</strong> {{ quoteLabel(selectedOrder.quote_amount) }}</div>
  <div class="mb-2"><strong>Teto pre-aprovado:</strong> {{ currency(selectedOrder.pre_approved_limit) }}</div>
  <div class="mb-2"><strong>Valor real:</strong> {{ currency(selectedOrder.actual_amount) }}</div>
  <div class="mb-2"><strong>Serviços:</strong> {{ currency(selectedOrder.service_amount) }}</div>
@@ -259,16 +259,34 @@
  <div v-if="clientMode === 'existing'" class="col-12">
  <ClientLookupField v-model="form.clientId" :clients="clients" required />
  </div>
- <template v-else>
- <div class="col-md-6">
- <label class="form-label fw-semibold required-label">Nome do cliente</label>
- <input v-model="newClient.name" class="form-control rounded-4" required />
+<template v-else>
+<div class="col-md-6">
+<label class="form-label fw-semibold required-label">Nome do cliente</label>
+<input v-model="newClient.name" class="form-control rounded-4" required />
+</div>
+<div class="col-md-6">
+<label class="form-label fw-semibold required-label">Telefone do cliente</label>
+<input v-model="newClient.phone" class="form-control rounded-4" required />
+</div>
+ <div class="col-12">
+ <div class="panel-card bg-light-subtle border border-secondary-subtle">
+ <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap mb-3">
+ <label class="form-label fw-semibold mb-0" :class="{ 'required-label': !newClient.noAddress }">Endereço</label>
+ <label class="form-check d-flex align-items-center gap-2 mb-0">
+ <input v-model="newClient.noAddress" class="form-check-input" type="checkbox" />
+ <span class="fw-semibold">Sem endereço</span>
+ </label>
  </div>
- <div class="col-md-6">
- <label class="form-label fw-semibold required-label">Telefone do cliente</label>
- <input v-model="newClient.phone" class="form-control rounded-4" required />
+ <input
+  v-model="newClient.address"
+  class="form-control rounded-4"
+  :disabled="newClient.noAddress"
+  :required="!newClient.noAddress"
+  placeholder="Rua, número, bairro e referência"
+ />
  </div>
- </template>
+ </div>
+</template>
  <div class="col-12">
  <label class="form-label fw-semibold required-label">Equipamento</label>
  <input v-model="form.equipmentName" class="form-control rounded-4" required placeholder="Ex.: Notebook Dell Inspiron 15" />
@@ -314,37 +332,89 @@
  </div>
  </div>
  <div class="col-lg-5">
- <MediaCaptureField v-model="photoPayload" :preview="photoPreview" label="Anexo principal" helper="Envie imagem ou PDF. O botão Câmera abre a captura ao vivo e o preview abre antes de salvar." @preview-change="handlePreviewChange" />
+ <div class="panel-card h-100 d-grid gap-3">
+ <div>
+ <div class="small fw-semibold">Anexos da OS</div>
+ <div class="small text-body-secondary">Use o mesmo campo para uma ou mais imagens ou PDFs.</div>
+ </div>
+ <MultiMediaCaptureField
+  v-model="orderAttachments"
+  label="Anexos"
+  helper="Selecione uma ou mais imagens ou PDFs no mesmo campo."
+  :existing-items="existingOrderAttachmentPreviews"
+  :existing-count="existingOrderAttachmentPreviews.length"
+  :max-per-selection="5"
+  :max-total="15"
+ />
+ <div v-if="orderAttachments.length" class="d-grid gap-2">
+  <div class="small fw-semibold">Arquivos adicionados neste cadastro</div>
+  <div v-for="(attachment, index) in orderAttachments" :key="`${attachment.name}-${index}`" class="rounded-4 border border-secondary-subtle bg-light-subtle p-3">
+   <div class="small text-truncate">{{ attachment.name || `Anexo ${index + 1}` }}</div>
+  </div>
+ </div>
+ </div>
  </div>
  </div>
 
  <div v-else-if="activeStep === 2" class="row g-4">
- <div class="col-lg-4">
- <div class="panel-card h-100">
- <div class="small fw-semibold mb-3">Orçamento automático</div>
- <div class="row g-3">
- <div class="col-12">
- <label class="form-label fw-semibold">Orçamento atual</label>
- <div class="form-control rounded-4 bg-body-tertiary">{{ currency(automaticQuote) }}</div>
- </div>
- <div class="col-12">
- <label class="form-check form-switch d-flex align-items-center gap-2 mb-0">
- <input v-model="form.preApproved" class="form-check-input" type="checkbox" />
- <span class="fw-semibold">Pré-aprovado</span>
- </label>
- </div>
- <div class="col-12">
- <label class="form-label fw-semibold">Previsão automática</label>
- <div class="form-control rounded-4 bg-body-tertiary">{{ dateLabel(predictedDueDate) }}</div>
- </div>
- <div class="col-12">
- <label class="form-label fw-semibold">Previsão final</label>
- <input v-model="form.dueDate" type="date" class="form-control rounded-4" />
- </div>
- <div class="col-12">
- <label class="form-label fw-semibold">Prazo base</label>
- <div class="form-control rounded-4 bg-body-tertiary">{{ minutesLabel(estimatedServiceMinutes) }}</div>
- </div>
+<div class="col-lg-4">
+<div class="panel-card h-100">
+<div class="small fw-semibold mb-3">Orçamento automático</div>
+<div class="row g-3">
+<div class="col-12">
+<label class="form-check form-switch d-flex align-items-center gap-2 mb-0">
+<input v-model="form.withoutQuote" class="form-check-input" type="checkbox" />
+<span class="fw-semibold">Sem orçamento</span>
+</label>
+</div>
+<div class="col-12">
+<label class="form-check form-switch d-flex align-items-center gap-2 mb-0">
+<input v-model="form.preApproved" class="form-check-input" type="checkbox" />
+<span class="fw-semibold">Pré-aprovado</span>
+</label>
+</div>
+<div class="col-12">
+<label class="form-check form-switch d-flex align-items-center gap-2 mb-0">
+<input v-model="form.manualQuoteEnabled" class="form-check-input" type="checkbox" :disabled="form.withoutQuote" />
+<span class="fw-semibold">Alterar orçamento manualmente</span>
+</label>
+</div>
+<div class="col-12">
+<label class="form-label fw-semibold">Orçamento atual</label>
+<div class="form-control rounded-4 bg-body-tertiary">{{ quoteLabel(resolvedQuoteAmount) }}</div>
+</div>
+<div v-if="form.manualQuoteEnabled && !form.withoutQuote" class="col-12">
+<label class="form-label fw-semibold">Orçamento manual</label>
+<input v-model.number="form.manualQuoteAmount" type="number" min="0" step="0.01" class="form-control rounded-4" />
+</div>
+<div class="col-12">
+<label class="form-check form-switch d-flex align-items-center gap-2 mb-0">
+<input v-model="form.withoutDueDate" class="form-check-input" type="checkbox" />
+<span class="fw-semibold">Sem previsão</span>
+</label>
+</div>
+<div class="col-12">
+<label class="form-check form-switch d-flex align-items-center gap-2 mb-0">
+<input v-model="form.manualDueDateEnabled" class="form-check-input" type="checkbox" :disabled="form.withoutDueDate" />
+<span class="fw-semibold">Alterar previsão manualmente</span>
+</label>
+</div>
+<div class="col-12">
+<label class="form-label fw-semibold">Previsão automática</label>
+<div class="form-control rounded-4 bg-body-tertiary">{{ dateLabel(predictedDueDate) }}</div>
+</div>
+<div v-if="form.manualDueDateEnabled && !form.withoutDueDate" class="col-12">
+<label class="form-label fw-semibold">Previsão final</label>
+<input v-model="form.dueDate" type="date" class="form-control rounded-4" />
+</div>
+<div class="col-12">
+<label class="form-label fw-semibold">Previsão atual</label>
+<div class="form-control rounded-4 bg-body-tertiary">{{ dueDateLabel(resolvedDueDate) }}</div>
+</div>
+<div class="col-12">
+<label class="form-label fw-semibold">Prazo base</label>
+<div class="form-control rounded-4 bg-body-tertiary">{{ minutesLabel(estimatedServiceMinutes) }}</div>
+</div>
  </div>
  </div>
  </div>
@@ -478,15 +548,16 @@
  </div>
 
  <div v-else class="row g-4">
- <div class="col-lg-6">
- <div class="panel-card h-100">
- <div class="small fw-semibold mb-3">Revisão final da abertura</div>
- <div class="mb-3"><strong>Cliente:</strong> {{ selectedClientLabel }}</div>
- <div class="mb-3"><strong>Equipamento:</strong> {{ form.equipmentName || 'Não informado' }}</div>
- <div class="mb-3"><strong>Acessórios:</strong> {{ accessorySummary }}</div>
- <div class="mb-3"><strong>Defeito relatado:</strong> {{ form.defect || 'Não informado' }}</div>
- <div class="mb-3"><strong>Estado físico:</strong> {{ form.extras || 'Não informado' }}</div>
- <div class="mb-0"><strong>Pré-aprovado:</strong> {{ form.preApproved ? 'Sim' : 'Não' }}</div>
+<div class="col-lg-6">
+<div class="panel-card h-100">
+<div class="small fw-semibold mb-3">Revisão final da abertura</div>
+<div class="mb-3"><strong>Cliente:</strong> {{ selectedClientLabel }}</div>
+<div class="mb-3"><strong>Endereço:</strong> {{ clientMode === 'new' ? (newClient.noAddress ? 'Sem endereço' : (newClient.address || 'Não informado')) : (selectedClientAddress || 'Não informado') }}</div>
+<div class="mb-3"><strong>Equipamento:</strong> {{ form.equipmentName || 'Não informado' }}</div>
+<div class="mb-3"><strong>Acessórios:</strong> {{ accessorySummary }}</div>
+<div class="mb-3"><strong>Defeito relatado:</strong> {{ form.defect || 'Não informado' }}</div>
+<div class="mb-3"><strong>Estado físico:</strong> {{ form.extras || 'Não informado' }}</div>
+<div class="mb-0"><strong>Pré-aprovado:</strong> {{ form.preApproved ? 'Sim' : 'Não' }}</div>
  </div>
  </div>
  <div class="col-lg-6">
@@ -519,22 +590,22 @@
  <div class="small fw-semibold mb-1">Solicitados</div>
  <div class="fs-5 fw-bold">{{ currency(requestedProductsTotal) }}</div>
  </div>
- <div class="col-md-6">
- <div class="small fw-semibold mb-1">Previsão automática</div>
- <div class="fs-5 fw-bold">{{ dateLabel(predictedDueDate) }}</div>
- </div>
- <div class="col-md-6">
- <div class="small fw-semibold mb-1">Previsão final</div>
- <div class="fs-5 fw-bold">{{ dateLabel(form.dueDate || predictedDueDate) }}</div>
- </div>
+<div class="col-md-6">
+<div class="small fw-semibold mb-1">Previsão automática</div>
+<div class="fs-5 fw-bold">{{ dateLabel(predictedDueDate) }}</div>
+</div>
+<div class="col-md-6">
+<div class="small fw-semibold mb-1">Previsão final</div>
+<div class="fs-5 fw-bold">{{ dueDateLabel(resolvedDueDate) }}</div>
+</div>
  <div class="col-md-6">
  <div class="small fw-semibold mb-1">Prazo base</div>
  <div class="fs-5 fw-bold">{{ minutesLabel(estimatedServiceMinutes) }}</div>
  </div>
- <div class="col-12">
- <div class="small fw-semibold mb-1">Orçamento automático</div>
- <div class="fs-3 fw-bold text-success">{{ currency(automaticQuote) }}</div>
- </div>
+<div class="col-12">
+<div class="small fw-semibold mb-1">Orçamento final</div>
+<div class="fs-3 fw-bold text-success">{{ quoteLabel(resolvedQuoteAmount) }}</div>
+</div>
  </div>
  </div>
  </div>
@@ -551,7 +622,7 @@ import AppShell from "../components/AppShell.vue";
 import ClientLookupField from "../components/ClientLookupField.vue";
 import DataTable from "../components/DataTable.vue";
 import FilterDrawer from "../components/FilterDrawer.vue";
-import MediaCaptureField from "../components/MediaCaptureField.vue";
+import MultiMediaCaptureField from "../components/MultiMediaCaptureField.vue";
 import MetricCard from "../components/MetricCard.vue";
 import ModalDialog from "../components/ModalDialog.vue";
 import OrderWizard from "../components/OrderWizard.vue";
@@ -617,8 +688,8 @@ const selectedTimeline = ref<OrderTimelinePayload | null>(null);
 const showDetail = ref(false);
 const showForm = ref(false);
 const activeStep = ref(0);
-const photoPayload = ref<MediaUploadPayload | null>(null);
-const photoPreview = ref("");
+const orderAttachments = ref<MediaUploadPayload[]>([]);
+const existingOrderAttachmentPreviews = ref<Array<{ url: string; name?: string }>>([]);
 const clientMode = ref<"existing" | "new">("existing");
 const createRouteToken = ref("");
 const currentOrderStatus = ref("ABERTA");
@@ -656,6 +727,11 @@ const form = reactive({
  extras: "",
  preApproved: false,
  paymentMethod: "CAIXINHA_LOJA",
+ manualQuoteEnabled: false,
+ manualQuoteAmount: 0,
+ withoutQuote: false,
+ manualDueDateEnabled: false,
+ withoutDueDate: false,
  dueDate: "",
  items: [] as EditableOrderItem[],
  services: [] as EditableOrderService[],
@@ -664,7 +740,9 @@ const form = reactive({
 
 const newClient = reactive({
  name: "",
- phone: ""
+ phone: "",
+ address: "",
+ noAddress: false
 });
 
 const openOrders = computed(() => orders.value.filter((item) => ["ABERTA", "EM_ANDAMENTO"].includes(item.order_status)).length);
@@ -676,6 +754,24 @@ const requestedProductsTotal = computed(() => form.requestedProducts.reduce((sum
 const estimatedServiceMinutes = computed(() => form.services.reduce((maxMinutes, item) => Math.max(maxMinutes, Number(item.estimatedMinutes || 0)), 0));
 const automaticQuote = computed(() => Math.max(0, partsTotal.value + servicesTotal.value + requestedProductsTotal.value));
 const predictedDueDate = computed(() => buildPredictedDueDate(estimatedServiceMinutes.value));
+const resolvedQuoteAmount = computed(() => {
+ if (form.withoutQuote) {
+  return null;
+ }
+ if (form.manualQuoteEnabled) {
+  return Math.max(0, Number(form.manualQuoteAmount || 0));
+ }
+ return automaticQuote.value;
+});
+const resolvedDueDate = computed(() => {
+ if (form.withoutDueDate) {
+  return "";
+ }
+ if (form.manualDueDateEnabled) {
+  return form.dueDate;
+ }
+ return predictedDueDate.value;
+});
 const accessorySummary = computed(() => form.accessories.length ? form.accessories.join(", ") : "Nenhum acessório marcado");
 const paymentMethodOptions = computed(() => {
  const base = session.meta?.paymentMethods?.length ? session.meta.paymentMethods : fallbackPaymentMethods;
@@ -689,6 +785,7 @@ const selectedClientLabel = computed(() => {
  }
  return clients.value.find((item) => item.id === Number(form.clientId))?.name || "Cliente não selecionado";
 });
+const selectedClientAddress = computed(() => clients.value.find((item) => item.id === Number(form.clientId))?.address || "");
 
 function closeActionMenu(target: HTMLElement | null) {
  target?.closest("details")?.removeAttribute("open");
@@ -712,7 +809,7 @@ function approvalStatusTone(code: string) {
 
 function dateLabel(value: string | null | undefined) {
  if (!value) {
- return "Não informado";
+ return "Sem previsão";
  }
  const raw = String(value);
  const dateOnly = raw.slice(0, 10);
@@ -721,6 +818,14 @@ function dateLabel(value: string | null | undefined) {
  return day + "/" + month + "/" + year;
  }
  return raw;
+}
+
+function dueDateLabel(value: string | null | undefined) {
+ return value ? dateLabel(value) : "Sem previsão";
+}
+
+function quoteLabel(value: number | null | undefined) {
+ return value === null || value === undefined ? "Sem orçamento" : currency(value);
 }
 
 function buildPredictedDueDate(totalMinutes: number) {
@@ -826,18 +931,23 @@ function resetForm() {
  accessoriesOther: "",
  defect: "",
   extras: "",
-  preApproved: false,
-  paymentMethod: "CAIXINHA_LOJA",
-  dueDate: "",
-  items: [],
-  services: [],
-  requestedProducts: []
+ preApproved: false,
+ paymentMethod: "CAIXINHA_LOJA",
+ manualQuoteEnabled: false,
+ manualQuoteAmount: 0,
+ withoutQuote: false,
+ manualDueDateEnabled: false,
+ withoutDueDate: false,
+ dueDate: "",
+ items: [],
+ services: [],
+ requestedProducts: []
  });
- Object.assign(newClient, { name: "", phone: "" });
+ Object.assign(newClient, { name: "", phone: "", address: "", noAddress: false });
  currentOrderStatus.value = "ABERTA";
  clientMode.value = "existing";
- photoPayload.value = null;
- photoPreview.value = "";
+ orderAttachments.value = [];
+ existingOrderAttachmentPreviews.value = [];
  activeStep.value = 0;
 }
 
@@ -890,27 +1000,34 @@ async function removeSelectedOrders() {
 
 function persistDraft() {
  const key = form.id ? DRAFT_KEY + "-" + form.id : DRAFT_KEY;
- window.localStorage.setItem(
- key,
- JSON.stringify({
- form: {
- ...form,
- items: form.items.map((item) => ({ ...item })),
- services: form.services.map((service) => ({ ...service })),
- requestedProducts: form.requestedProducts.map((item) => ({ ...item }))
- },
- newClient: { ...newClient },
- clientMode: clientMode.value,
- photoPayload: photoPayload.value,
- photoPreview: photoPreview.value,
- currentOrderStatus: currentOrderStatus.value
- })
- );
+ const payload = {
+  form: {
+   ...form,
+   items: form.items.map((item) => ({ ...item })),
+   services: form.services.map((service) => ({ ...service })),
+   requestedProducts: form.requestedProducts.map((item) => ({ ...item }))
+  },
+  newClient: { ...newClient },
+  clientMode: clientMode.value,
+  existingOrderAttachmentPreviews: existingOrderAttachmentPreviews.value,
+  currentOrderStatus: currentOrderStatus.value
+ };
+
+ try {
+  window.localStorage.setItem(key, JSON.stringify(payload));
+  return true;
+ } catch {
+  window.localStorage.removeItem(key);
+  return false;
+ }
 }
 
 function saveDraft() {
- persistDraft();
- notifySuccess("Rascunho salvo");
+ if (persistDraft()) {
+  notifySuccess("Rascunho salvo");
+  return;
+ }
+ notifyError(new Error("O rascunho foi salvo sem anexos locais. Finalize o envio das imagens antes de sair da tela."));
 }
 
 function restoreDraft() {
@@ -932,6 +1049,11 @@ function restoreDraft() {
  form.extras = String(parsed.form?.extras || "");
  form.preApproved = Boolean(parsed.form?.preApproved);
  form.paymentMethod = String(parsed.form?.paymentMethod || "CAIXINHA_LOJA");
+ form.manualQuoteEnabled = Boolean(parsed.form?.manualQuoteEnabled);
+ form.manualQuoteAmount = Number(parsed.form?.manualQuoteAmount || 0);
+ form.withoutQuote = Boolean(parsed.form?.withoutQuote);
+ form.manualDueDateEnabled = Boolean(parsed.form?.manualDueDateEnabled);
+ form.withoutDueDate = Boolean(parsed.form?.withoutDueDate);
  form.dueDate = String(parsed.form?.dueDate || "");
  form.items = Array.isArray(parsed.form?.items)
  ? parsed.form.items.map((item: any) => ({
@@ -965,10 +1087,15 @@ function restoreDraft() {
  status: String(item.status || 'PENDENTE')
  }))
  : [];
- Object.assign(newClient, { name: parsed.newClient?.name || "", phone: parsed.newClient?.phone || "" });
+ Object.assign(newClient, {
+  name: parsed.newClient?.name || "",
+  phone: parsed.newClient?.phone || "",
+  address: parsed.newClient?.address || "",
+  noAddress: Boolean(parsed.newClient?.noAddress)
+ });
  clientMode.value = parsed.clientMode || "existing";
- photoPayload.value = parsed.photoPayload || null;
- photoPreview.value = parsed.photoPreview || "";
+ orderAttachments.value = [];
+ existingOrderAttachmentPreviews.value = Array.isArray(parsed.existingOrderAttachmentPreviews) ? parsed.existingOrderAttachmentPreviews : [];
  currentOrderStatus.value = String(parsed.currentOrderStatus || currentOrderStatus.value || "ABERTA");
  } catch {
  window.localStorage.removeItem(key);
@@ -1035,9 +1162,18 @@ function hydrateForm(order: OrderDetail) {
  salePrice: Number(item.sale_price || item.salePrice || 0),
  status: String(item.status || 'PENDENTE')
  }));
+ form.withoutQuote = order.quote_amount === null || order.quote_amount === undefined;
+ form.manualQuoteAmount = Number(order.quote_amount || 0);
+ form.manualQuoteEnabled = !form.withoutQuote && Math.abs(Number(order.quote_amount || 0) - automaticQuote.value) > 0.009;
+ form.withoutDueDate = !String(order.due_date || "").trim();
+ form.manualDueDateEnabled = !form.withoutDueDate && String(order.due_date || "").slice(0, 10) !== predictedDueDate.value;
  currentOrderStatus.value = order.order_status || "ABERTA";
- photoPreview.value = order.photo_url || "";
- photoPayload.value = null;
+ orderAttachments.value = [];
+ existingOrderAttachmentPreviews.value = order.attachments?.length
+  ? order.attachments.map((attachment) => ({ url: attachment.url, name: attachment.file_name }))
+  : order.photo_url
+   ? [{ url: order.photo_url, name: "Anexo existente" }]
+   : [];
  clientMode.value = "existing";
  activeStep.value = 0;
 }
@@ -1052,10 +1188,6 @@ async function openEditById(orderId: number) {
  } catch (error) {
  await notifyError(error);
  }
-}
-
-function handlePreviewChange(preview: string) {
- photoPreview.value = preview;
 }
 
 function handleAccessoryToggle(accessory: string, event: Event) {
@@ -1149,6 +1281,9 @@ async function saveOrder() {
  if (clientMode.value === "new" && (!newClient.name.trim() || !newClient.phone.trim())) {
  throw new Error("Nome e telefone do cliente são obrigatórios.");
  }
+ if (clientMode.value === "new" && !newClient.noAddress && !newClient.address.trim()) {
+ throw new Error("Informe o endereço do cliente ou marque sem endereço.");
+ }
  if (!form.equipmentName.trim()) {
  throw new Error("Informe o equipamento recebido.");
  }
@@ -1169,7 +1304,8 @@ async function saveOrder() {
  if (clientMode.value === "new") {
  const createdClient = await api.saveClient({
  name: newClient.name,
- phone: newClient.phone
+ phone: newClient.phone,
+ address: newClient.noAddress ? "" : newClient.address
  });
  clientId = createdClient.data.id;
  }
@@ -1177,21 +1313,24 @@ async function saveOrder() {
  const response = await api.saveOrder({
  id: form.id || undefined,
  clientId,
- equipmentName: form.equipmentName,
- equipment: form.equipmentName,
- orderStatus: currentOrderStatus.value,
- dueDate: form.dueDate || predictedDueDate.value,
- accessories: form.accessories,
- accessoriesOther: form.accessories.includes("Outro") ? form.accessoriesOther : "",
- defect: form.defect,
- extras: form.extras,
- preApproved: form.preApproved,
- paymentMethod: form.paymentMethod,
- notes: composeOrderNotes("", form.accessories, form.accessories.includes("Outro") ? form.accessoriesOther : ""),
+  equipmentName: form.equipmentName,
+  equipment: form.equipmentName,
+  orderStatus: currentOrderStatus.value,
+  dueDate: resolvedDueDate.value,
+  withoutDueDate: form.withoutDueDate,
+  accessories: form.accessories,
+  accessoriesOther: form.accessories.includes("Outro") ? form.accessoriesOther : "",
+  defect: form.defect,
+  extras: form.extras,
+  preApproved: form.preApproved,
+  quoteAmount: resolvedQuoteAmount.value,
+  withoutQuote: form.withoutQuote,
+  paymentMethod: form.paymentMethod,
+  notes: composeOrderNotes("", form.accessories, form.accessories.includes("Outro") ? form.accessoriesOther : ""),
  items: form.items.filter((item) => item.catalogItemId).map((item) => ({ catalogItemId: item.catalogItemId, quantity: item.quantity })),
  services: form.services.filter((item) => item.serviceId).map((item) => ({ serviceId: item.serviceId, quantity: item.quantity })),
  requestedProducts: form.requestedProducts.filter((item) => item.name.trim()).map((item) => ({ id: item.id, name: item.name.trim(), quantity: item.quantity, salePrice: item.salePrice, status: item.status })),
- photoUpload: photoPayload.value ?? undefined
+  photoUploads: orderAttachments.value
  });
 
  clearDraft(form.id || undefined);
@@ -1369,12 +1508,11 @@ watch(
 
 watch(
  () => ({
- form: { ...form, items: form.items.map((item) => ({ ...item })), services: form.services.map((service) => ({ ...service })), requestedProducts: form.requestedProducts.map((item) => ({ ...item })) },
- newClient: { ...newClient },
- clientMode: clientMode.value,
- photoPayload: photoPayload.value,
- photoPreview: photoPreview.value,
- currentOrderStatus: currentOrderStatus.value
+  form: { ...form, items: form.items.map((item) => ({ ...item })), services: form.services.map((service) => ({ ...service })), requestedProducts: form.requestedProducts.map((item) => ({ ...item })) },
+  newClient: { ...newClient },
+  clientMode: clientMode.value,
+  existingOrderAttachmentPreviews: existingOrderAttachmentPreviews.value,
+  currentOrderStatus: currentOrderStatus.value
  }),
  () => {
  if (showForm.value) {
@@ -1390,6 +1528,52 @@ watch(clientMode, (mode) => {
  form.clientId = 0;
  }
 });
+
+watch(
+ () => form.withoutQuote,
+ (value) => {
+  if (value) {
+   form.manualQuoteEnabled = false;
+  }
+ }
+);
+
+watch(
+ () => form.manualQuoteEnabled,
+ (value) => {
+  if (value && !form.manualQuoteAmount) {
+   form.manualQuoteAmount = automaticQuote.value;
+  }
+ }
+);
+
+watch(
+ () => form.withoutDueDate,
+ (value) => {
+  if (value) {
+   form.manualDueDateEnabled = false;
+   form.dueDate = "";
+  }
+ }
+);
+
+watch(
+ () => form.manualDueDateEnabled,
+ (value) => {
+  if (value && !form.dueDate) {
+   form.dueDate = predictedDueDate.value;
+  }
+ }
+);
+
+watch(
+ () => newClient.noAddress,
+ (value) => {
+  if (value) {
+   newClient.address = "";
+  }
+ }
+);
 
 onMounted(async () => {
  try {

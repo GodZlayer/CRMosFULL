@@ -46,6 +46,15 @@ export interface MediaUploadPayload {
   mimeType?: string;
 }
 
+export interface OrderAttachment {
+  id: number;
+  file_path: string;
+  file_name: string;
+  mime_type?: string;
+  created_at: string;
+  url: string;
+}
+
 export interface MetaPayload {
   roles: LookupOption[];
   orderStatuses: LookupOption[];
@@ -279,6 +288,7 @@ export interface OrderDetail extends OrderSummary {
   client_document: string;
   client_address: string;
   photo_url: string;
+  attachments: OrderAttachment[];
   items: OrderItem[];
   services: OrderService[];
   requested_products: RequestedProduct[];
@@ -802,6 +812,8 @@ export interface ReportsPayload {
     totalRevenue: number;
     totalExpenses: number;
     totalInventoryValue: number;
+    totalInventoryUnits?: number;
+    totalInventoryItems?: number;
     totalPdvValue?: number;
     totalEntries?: number;
     totalPurchaseExpenses?: number;
@@ -853,8 +865,6 @@ export interface Filters {
   withOrder?: boolean | string;
   withoutOrder?: boolean | string;
 }
-
-
 
 
 

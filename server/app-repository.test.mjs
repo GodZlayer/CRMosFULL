@@ -470,6 +470,22 @@ test("relatorios usam o mesmo fluxo de caixa do financeiro para listar transacoe
   repository.close();
 });
 
+test("relatorios mantem valor e unidades do estoque pelo estoque real atual", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const fullInventory = repository
+    .listCatalogItems({ activeOnly: true })
+    .filter((item) => !String(item.deleted_at || "").trim());
+  const expectedValue = fullInventory.reduce((sum, item) => sum + Number(item.stock_value || 0), 0);
+  const expectedUnits = fullInventory.reduce((sum, item) => sum + Number(item.stock_quantity || 0), 0);
+  const filteredReports = repository.getReports({ search: "__nao_existe_no_catalogo__" });
+
+  assert.equal(Number(filteredReports.summary.totalInventoryValue || 0), expectedValue);
+  assert.equal(Number(filteredReports.summary.totalInventoryUnits || 0), expectedUnits);
+  assert.equal(Number(filteredReports.summary.totalInventoryItems || 0), fullInventory.length);
+  assert.equal(filteredReports.inventory.length, 0);
+  repository.close();
+});
+
 test("sistema desfaz a ultima reposicao e remove estoque, financeiro e caixa vinculados", () => {
   const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
   const actor = getActor(repository);
@@ -549,6 +565,54 @@ test("financeiro reverte reposicao pelo lancamento e limpa estoque, financeiro e
   assert.equal(refreshedFinanceEntry, undefined);
   assert.equal(refreshedLedgerEntry, undefined);
   assert.equal(Number(refreshedAccount.balance_amount), 0);
+  repository.close();
+});
+
+test("financeiro reverte venda do PDV pelo lancamento e remove estoque, caixa e financeiro vinculados", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const store = repository.getCurrentStore();
+  const product = repository.saveCatalogItem({
+    name: "Produto reversao PDV",
+    category: "Acessórios",
+    itemCondition: "NOVA",
+    stockQuantity: 3,
+    minStock: 0,
+    costAmount: 10,
+    priceAmount: 25,
+    _actor: actor
+  });
+
+  const session = repository.openCashSession({
+    openingAmount: 0,
+    paymentMethod: "CAIXINHA_LOJA",
+    notes: "Teste reversao PDV",
+    _actor: actor
+  });
+
+  const sale = repository.createPosSale({
+    cashSessionId: session.id,
+    items: [{ itemType: "PRODUCT", catalogItemId: product.id, quantity: 2 }],
+    paymentMethod: "CAIXINHA_LOJA",
+    _actor: actor
+  });
+
+  const financeEntry = repository.listFinanceEntries({ storeId: store.id }).find((entry) => String(entry.description) === `Venda ${sale.code}`);
+  assert.ok(financeEntry);
+
+  repository.revertFinancialTransaction({ financeEntryId: financeEntry.id }, { actor });
+
+  const refreshedItem = repository.getCatalogItem(product.id);
+  const refreshedSale = repository.getPosSale(sale.id);
+  const refreshedFinanceEntry = repository.listFinanceEntries({ storeId: store.id }).find((entry) => String(entry.description) === `Venda ${sale.code}`);
+  const refreshedCashMovement = repository
+    .listStoreCashMovements({ storeId: store.id })
+    .find((entry) => Number(entry.sale_id || 0) === Number(sale.id));
+
+  assert.equal(Number(refreshedItem.stock_quantity || 0), 3);
+  assert.equal(refreshedSale, null);
+  assert.equal(refreshedFinanceEntry, undefined);
+  assert.equal(refreshedCashMovement, undefined);
   repository.close();
 });
 

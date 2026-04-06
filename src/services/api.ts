@@ -345,6 +345,12 @@ export const api = {
       body: JSON.stringify(payload)
     });
   },
+  addOrderAttachments(id: number, payload: { uploads: MediaUploadPayload[] }) {
+    return request<{ data: OrderDetail }>(`/api/orders/${id}/attachments`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  },
   currentStore() {
     return request<{ data: StoreContext | null }>("/api/stores/current");
   },
@@ -580,7 +586,6 @@ export const api = {
     return request<{ data: LegacyImportSummary[] }>(`/api/legacy-import-rows/summary${toQuery(filters)}`);
   }
 };
-
 
 
 
