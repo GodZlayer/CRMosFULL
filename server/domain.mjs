@@ -1,7 +1,52 @@
 ﻿import { APPROVAL_STATUSES, TIME_ZONE } from "./constants.mjs";
 
-export function nowIso() {
-  return new Date().toISOString();
+function formatOffset(offsetMinutes) {
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absolute = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(absolute / 60)).padStart(2, "0");
+  const minutes = String(absolute % 60).padStart(2, "0");
+  return `${sign}${hours}:${minutes}`;
+}
+
+function getZonedParts(input = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    fractionalSecondDigits: 3,
+    hourCycle: "h23"
+  });
+  const parts = formatter.formatToParts(new Date(input));
+  return Object.fromEntries(parts.map((part) => [part.type, part.value]));
+}
+
+export function nowIso(input = new Date()) {
+  const date = new Date(input);
+  const parts = getZonedParts(date);
+  const localAsUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second),
+    Number(parts.fractionalSecond)
+  );
+  const offsetMinutes = Math.round((localAsUtc - date.getTime()) / 60000);
+  const offset = formatOffset(offsetMinutes);
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}.${parts.fractionalSecond}${offset}`;
+}
+
+export function isExpiredTimestamp(value, reference = new Date()) {
+  const timestamp = Date.parse(String(value || ""));
+  if (Number.isNaN(timestamp)) {
+    return true;
+  }
+  return timestamp < new Date(reference).getTime();
 }
 
 export function getLocalDateParts(input = new Date()) {
@@ -10,14 +55,7 @@ export function getLocalDateParts(input = new Date()) {
     return { year, month, day };
   }
 
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  });
-  const parts = formatter.formatToParts(new Date(input));
-  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const map = getZonedParts(input);
   return {
     year: map.year,
     month: map.month,
@@ -39,7 +77,10 @@ export function toNumber(value) {
   if (value === null || value === undefined || value === "") {
     return null;
   }
-  const normalized = Number(value);
+  const normalizedText = typeof value === "string" && value.includes(",")
+    ? value.replace(/\./g, "").replace(",", ".")
+    : value;
+  const normalized = Number(normalizedText);
   return Number.isFinite(normalized) ? normalized : null;
 }
 

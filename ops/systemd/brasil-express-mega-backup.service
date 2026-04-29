@@ -1,0 +1,15 @@
+[Unit]
+Description=Brasil Express CRM snapshot backup para MEGA
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=loja
+WorkingDirectory=/home/loja/Documentos/BrasilExpressCRMinterno
+Environment=PROJECT_ROOT=/home/loja/Documentos/BrasilExpressCRMinterno
+Environment=BACKUP_ROOT=/home/loja/backups/brasil-express-crm
+Environment=MEGA_REMOTE_DIR=/Root/BrasilExpressCRM/backups
+Environment=LOCAL_RETENTION_DAYS=7
+ExecStart=/usr/bin/env bash /home/loja/Documentos/BrasilExpressCRMinterno/scripts/backup-storage-to-mega.sh
+

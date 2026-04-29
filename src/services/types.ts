@@ -116,6 +116,7 @@ export interface CatalogItem {
   active: number;
   is_store_inventory: number;
   unit_margin: number;
+  stock_cost_value: number;
   stock_value: number;
   stock_health: string;
   stock_health_label: string;
@@ -147,6 +148,27 @@ export interface CatalogUsageHistory {
 export interface CatalogItemDetail extends CatalogItem {
   usage_history: CatalogUsageHistory[];
   replenishment_history: StockReplenishment[];
+  stock_batches: CatalogStockBatch[];
+}
+
+export interface CatalogStockBatch {
+  id: number;
+  catalog_item_id: number;
+  source_type: string;
+  source_id: number | null;
+  quantity: number;
+  quantity_remaining: number;
+  unit_cost: number;
+  unit_price: number;
+  notes: string;
+  created_at: string;
+  updated_at?: string | null;
+  replenishment_id?: number | null;
+  actor_name?: string | null;
+  previous_cost_amount?: number | null;
+  previous_price_amount?: number | null;
+  remaining_cost_total?: number | null;
+  remaining_price_total?: number | null;
 }
 
 export interface StockReplenishment {
@@ -163,6 +185,11 @@ export interface StockReplenishment {
   created_at: string;
   finance_entry_id?: number | null;
   extra_finance_entry_id?: number | null;
+  batch_id?: number | null;
+  batch_quantity?: number | null;
+  batch_quantity_remaining?: number | null;
+  batch_unit_cost?: number | null;
+  batch_unit_price?: number | null;
 }
 export interface CatalogDeleteResult {
   success: boolean;
@@ -369,6 +396,23 @@ export interface StoreCashMovement {
   raw_payload: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface StoreCashTransferPayload {
+  fromCashAccountId: number;
+  toCashAccountId: number;
+  amount: number;
+  movementDate?: string;
+  notes?: string;
+  sourceDescription?: string;
+  destinationDescription?: string;
+  transferKey?: string;
+}
+
+export interface StoreCashTransferResult {
+  success: boolean;
+  fromAccount: StoreCashAccount;
+  toAccount: StoreCashAccount;
 }
 
 export interface LegacyImportRow {
@@ -865,10 +909,6 @@ export interface Filters {
   withOrder?: boolean | string;
   withoutOrder?: boolean | string;
 }
-
-
-
-
 
 
 

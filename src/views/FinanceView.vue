@@ -17,6 +17,10 @@
         <i class="fa-solid fa-door-closed me-2"></i>
         Fechar caixa
       </button>
+      <button class="btn btn-outline-primary rounded-pill" :disabled="loading || !workbook" @click="openTransferModal">
+        <i class="fa-solid fa-right-left me-2"></i>
+        Transferir saldo
+      </button>
       <button class="btn btn-primary rounded-pill" :disabled="loading || !workbook" @click="openExpenseModal">
         <i class="fa-solid fa-arrow-up-right-dots me-2"></i>
         Lançar saída
@@ -39,6 +43,40 @@
       <div class="row g-4">
         <div class="col-md-4">
           <MetricCard title="Saldo Outros" :value="money(othersBalance)" hint="Conta OUTROS para despesas gerais" icon="fa-solid fa-coins" tone="warning" />
+        </div>
+      </div>
+
+      <div class="panel-card d-grid gap-3">
+        <div>
+          <div class="small fw-semibold">Ações rápidas</div>
+          <h3 class="h5 fw-bold mb-1">Movimente o saldo da loja</h3>
+          <p class="mb-0">Use esta faixa para abrir caixa, transferir saldo entre contas e lançar saídas sem depender da barra superior.</p>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          <button
+            v-if="!activeCashSession"
+            class="btn btn-outline-primary rounded-pill"
+            :disabled="loading"
+            @click="openOpenCashModal">
+            <i class="fa-solid fa-door-open me-2"></i>
+            Abrir caixa
+          </button>
+          <button
+            v-else
+            class="btn btn-outline-warning rounded-pill"
+            :disabled="loading"
+            @click="openCloseCashModal">
+            <i class="fa-solid fa-door-closed me-2"></i>
+            Fechar caixa
+          </button>
+          <button class="btn btn-outline-primary rounded-pill" :disabled="loading || !workbook" @click="openTransferModal">
+            <i class="fa-solid fa-right-left me-2"></i>
+            Transferir saldo
+          </button>
+          <button class="btn btn-primary rounded-pill" :disabled="loading || !workbook" @click="openExpenseModal">
+            <i class="fa-solid fa-arrow-up-right-dots me-2"></i>
+            Lançar saída
+          </button>
         </div>
       </div>
 
@@ -443,6 +481,54 @@
         </div>
       </div>
     </ModalDialog>
+
+    <ModalDialog v-model="showTransferModal" title="Transferir saldo" eyebrow="Financeiro" size="lg">
+      <div class="d-grid gap-3">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label fw-semibold">Conta de origem</label>
+            <select v-model.number="transferForm.fromCashAccountId" class="form-select rounded-4">
+              <option :value="0">Selecione</option>
+              <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.name }}</option>
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label fw-semibold">Conta de destino</label>
+            <select v-model.number="transferForm.toCashAccountId" class="form-select rounded-4">
+              <option :value="0">Selecione</option>
+              <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.name }}</option>
+            </select>
+          </div>
+        </div>
+        <div class="row g-3">
+          <div class="col-md-5">
+            <label class="form-label fw-semibold">Valor</label>
+            <input v-model="transferForm.amount" type="text" inputmode="decimal" class="form-control rounded-4" placeholder="-573,10" />
+            <div class="form-text">Use valor negativo para transferir uma dívida; a origem melhora e o destino assume o saldo negativo.</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label fw-semibold">Data</label>
+            <input v-model="transferForm.movementDate" type="date" class="form-control rounded-4" />
+          </div>
+        </div>
+        <div class="row g-3">
+          <div class="col-12">
+            <label class="form-label fw-semibold">Observação</label>
+            <textarea v-model="transferForm.notes" rows="3" class="form-control rounded-4" placeholder="Opcional: motivo da transferência, referência interna..."></textarea>
+          </div>
+        </div>
+
+        <div class="small">Transferência interna só move saldo entre contas da loja. Conta de origem negativa também é aceita. Ela não entra como receita nem como despesa.</div>
+
+        <div class="d-flex justify-content-end gap-2">
+          <button class="btn btn-outline-secondary rounded-pill" :disabled="savingTransfer" @click="showTransferModal = false">Cancelar</button>
+          <button class="btn btn-primary rounded-pill" :disabled="savingTransfer" @click="saveTransfer">
+            <i class="fa-solid fa-right-left me-2"></i>
+            {{ savingTransfer ? 'Transferindo...' : 'Transferir saldo' }}
+          </button>
+        </div>
+      </div>
+    </ModalDialog>
   </AppShell>
 </template>
 
@@ -460,10 +546,12 @@ const workbook = ref<FinanceWorkbookPayload | null>(null);
 const cashSessions = ref<CashSession[]>([]);
 const loading = ref(false);
 const showExpenseModal = ref(false);
+const showTransferModal = ref(false);
 const showEditFinanceModal = ref(false);
 const showOpenCashModal = ref(false);
 const showCloseCashModal = ref(false);
 const savingExpense = ref(false);
+const savingTransfer = ref(false);
 const savingEditFinance = ref(false);
 const savingCashSession = ref(false);
 const revertingMovementId = ref(0);
@@ -476,6 +564,14 @@ const expenseForm = reactive({
   entryDate: getTodayString(),
   cashAccountId: 0,
   category: ""
+});
+
+const transferForm = reactive({
+  fromCashAccountId: 0,
+  toCashAccountId: 0,
+  amount: 0,
+  movementDate: getTodayString(),
+  notes: ""
 });
 
 const editFinanceForm = reactive({
@@ -587,6 +683,20 @@ function money(value: number | null | undefined) {
   return currency(Number(value || 0));
 }
 
+function parseTransferAmount(value: unknown) {
+  if (typeof value === "number") {
+    return value;
+  }
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return Number.NaN;
+  }
+  if (text.includes(",")) {
+    return Number(text.replace(/\./g, "").replace(",", "."));
+  }
+  return Number(text);
+}
+
 function readAccountBalance(code: string) {
   const account = accounts.value.find((item) => item.code === code);
   return roundMoney(Number(account?.balance_amount || 0));
@@ -612,7 +722,12 @@ function isDateBetween(value: string, fromDate: string, toDate: string) {
 function summarizeMovements(entries: StoreCashMovement[]) {
   return entries.reduce(
     (summary, entry) => {
-      const isExpense = String(entry.entry_type || "").toUpperCase() === "DESPESA";
+      const movementType = String(entry.movement_type || "").toUpperCase();
+      const entryType = String(entry.entry_type || "").toUpperCase();
+      if (movementType.startsWith("TRANSFER_") || entryType === "TRANSFERENCIA") {
+        return summary;
+      }
+      const isExpense = entryType === "DESPESA";
       const amount = Number(entry.amount || 0);
       if (isExpense) {
         summary.expenses += amount;
@@ -655,7 +770,12 @@ function dateLabel(value: string) {
 }
 
 function entryTone(entry: StoreCashMovement) {
-  return String(entry.entry_type || "").toUpperCase() === "DESPESA" ? "danger" : "success";
+  const movementType = String(entry.movement_type || "").toUpperCase();
+  const entryType = String(entry.entry_type || "").toUpperCase();
+  if (movementType.startsWith("TRANSFER_") || entryType === "TRANSFERENCIA") {
+    return "info";
+  }
+  return entryType === "DESPESA" ? "danger" : "success";
 }
 
 function movementAccountLabel(entry: StoreCashMovement) {
@@ -663,6 +783,10 @@ function movementAccountLabel(entry: StoreCashMovement) {
 }
 
 function canRevertMovement(entry: StoreCashMovement) {
+  const movementType = String(entry.movement_type || "").toUpperCase();
+  if (movementType.startsWith("TRANSFER_") || String(entry.entry_type || "").toUpperCase() === "TRANSFERENCIA") {
+    return false;
+  }
   return Number(entry.replenishment_id || 0) > 0 || Number(entry.finance_entry_id || 0) > 0;
 }
 
@@ -707,7 +831,12 @@ async function revertMovement(entry: StoreCashMovement) {
 }
 
 function entryLabel(entry: StoreCashMovement) {
-  return String(entry.entry_type || "").toUpperCase() === "DESPESA" ? "Saída" : "Entrada";
+  const movementType = String(entry.movement_type || "").toUpperCase();
+  const entryType = String(entry.entry_type || "").toUpperCase();
+  if (movementType.startsWith("TRANSFER_") || entryType === "TRANSFERENCIA") {
+    return "Transferência";
+  }
+  return entryType === "DESPESA" ? "Saída" : "Entrada";
 }
 
 
@@ -792,6 +921,14 @@ function resetExpenseForm() {
   expenseForm.cashAccountId = othersAccountId.value || Number(accounts.value[0]?.id || 0);
 }
 
+function resetTransferForm() {
+  transferForm.fromCashAccountId = Number(accounts.value[0]?.id || 0);
+  transferForm.toCashAccountId = Number(accounts.value[1]?.id || accounts.value[0]?.id || 0);
+  transferForm.amount = 0;
+  transferForm.movementDate = getTodayString();
+  transferForm.notes = "";
+}
+
 
 function resetOpenCashForm() {
   openCashForm.openingAmount = totalBalance.value;
@@ -806,6 +943,11 @@ function resetCloseCashForm() {
 function openExpenseModal() {
   resetExpenseForm();
   showExpenseModal.value = true;
+}
+
+function openTransferModal() {
+  resetTransferForm();
+  showTransferModal.value = true;
 }
 
 function openOpenCashModal() {
@@ -886,6 +1028,40 @@ async function saveExpense() {
     await notifyError(error);
   } finally {
     savingExpense.value = false;
+  }
+}
+
+async function saveTransfer() {
+  try {
+    if (!Number(transferForm.fromCashAccountId || 0)) {
+      throw new Error("Selecione a conta de origem.");
+    }
+    if (!Number(transferForm.toCashAccountId || 0)) {
+      throw new Error("Selecione a conta de destino.");
+    }
+    if (Number(transferForm.fromCashAccountId) === Number(transferForm.toCashAccountId)) {
+      throw new Error("A conta de origem precisa ser diferente da conta de destino.");
+    }
+    const amount = parseTransferAmount(transferForm.amount);
+    if (!Number.isFinite(amount) || amount === 0) {
+      throw new Error("Informe um valor diferente de zero para transferir.");
+    }
+
+    savingTransfer.value = true;
+    await api.transferStoreCash({
+      fromCashAccountId: Number(transferForm.fromCashAccountId),
+      toCashAccountId: Number(transferForm.toCashAccountId),
+      amount,
+      movementDate: transferForm.movementDate || getTodayString(),
+      notes: transferForm.notes.trim()
+    });
+    showTransferModal.value = false;
+    await loadWorkbook();
+    await notifySuccess("Transferência registrada");
+  } catch (error) {
+    await notifyError(error);
+  } finally {
+    savingTransfer.value = false;
   }
 }
 

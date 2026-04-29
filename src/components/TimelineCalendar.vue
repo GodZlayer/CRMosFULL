@@ -1,5 +1,5 @@
 <template>
-  <div class="panel-card timeline-calendar">
+  <div class="panel-card timeline-calendar" :class="{ 'timeline-calendar--compact': compact }">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
       <div>
         <div class="small fw-semibold">Linha do tempo</div>
@@ -29,7 +29,7 @@
           :style="entry.style"
           @click="emit('select', entry.raw)">
           <strong>{{ entry.title }}</strong>
-          <span>{{ entry.subtitle }}</span>
+          <span v-if="showSubtitle">{{ entry.subtitle }}</span>
         </button>
       </div>
     </div>
@@ -42,6 +42,7 @@ import { computed, ref } from "vue";
 const props = defineProps<{
   title: string;
   entries: Array<Record<string, any>>;
+  compact?: boolean;
   startField?: string;
   endField?: string;
   titleField?: string;
@@ -54,6 +55,8 @@ const emit = defineEmits<{
 }>();
 
 const zoom = ref(1);
+const compact = computed(() => Boolean(props.compact));
+const showSubtitle = computed(() => !compact.value);
 
 const bounds = computed(() => {
   const startField = props.startField || "startDate";
@@ -110,3 +113,39 @@ function changeZoom(direction: number) {
   zoom.value = Math.min(3, Math.max(0.6, zoom.value + direction * 0.25));
 }
 </script>
+
+<style scoped>
+.timeline-entry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  border: 0;
+  border-radius: 0.9rem;
+  color: #fff;
+  padding: 0.8rem 0.9rem;
+  position: absolute;
+  min-height: 62px;
+  box-shadow: 0 12px 30px rgba(16, 35, 63, 0.18);
+  text-align: left;
+}
+
+.timeline-entry strong,
+.timeline-entry span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+.timeline-entry span {
+  opacity: 0.9;
+  font-size: 0.82rem;
+}
+
+.timeline-calendar--compact .timeline-entry {
+  min-height: 44px;
+  padding: 0.55rem 0.7rem;
+  justify-content: center;
+}
+</style>

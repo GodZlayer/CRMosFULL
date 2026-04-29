@@ -252,6 +252,20 @@ export function createApiServer(repo, options = {}) {
         const id = Number(pathname.split("/").pop());
         return sendJson(response, 200, { data: repo.revertCatalogReplenishment(id, { actor: user }) });
       }
+
+      if (pathname.match(/^\/api\/catalog\/replenishments\/\d+$/) && method === "PUT") {
+        ensureRole(user, ["ADMIN", "GERENTE"]);
+        const id = Number(pathname.split("/").pop());
+        const body = await readJsonBody(request);
+        return sendJson(response, 200, { data: repo.updateCatalogReplenishment(id, { ...body, _actor: user }) });
+      }
+
+      if (pathname.match(/^\/api\/catalog\/stock-batches\/\d+$/) && method === "PUT") {
+        ensureRole(user, ["ADMIN", "GERENTE"]);
+        const id = Number(pathname.split("/").pop());
+        const body = await readJsonBody(request);
+        return sendJson(response, 200, { data: repo.updateCatalogStockBatch(id, { ...body, _actor: user }) });
+      }
       if (pathname === "/api/services" && method === "GET") {
         return sendJson(response, 200, { data: repo.listServices(queryToObject(searchParams)) });
       }
@@ -512,6 +526,12 @@ export function createApiServer(repo, options = {}) {
         return sendJson(response, 200, { data: repo.saveStoreCashMovement({ ...body, storeId: store?.id || null, _store: store, _actor: user }) });
       }
 
+      if (pathname === "/api/store-cash/transfers" && method === "POST") {
+        ensureRole(user, ["ADMIN", "GERENTE"]);
+        const body = await readJsonBody(request);
+        return sendJson(response, 200, { data: repo.saveStoreCashTransfer({ ...body, storeId: store?.id || null, _store: store, _actor: user }) });
+      }
+
       if (pathname === "/api/store-cash/sessions" && method === "GET") {
         return sendJson(response, 200, { data: repo.listCashSessions({ ...queryToObject(searchParams), storeId: store?.id || "" }) });
       }
@@ -580,6 +600,17 @@ export function createApiServer(repo, options = {}) {
         return sendText(response, 200, dump.sql, {
           "Content-Type": "application/sql; charset=utf-8",
           "Content-Disposition": `attachment; filename="${dump.fileName}"`
+        });
+      }
+
+      if (pathname === "/api/system-transfer/export/ods" && method === "POST") {
+        ensureRole(user, ["ADMIN", "GERENTE"]);
+        const body = await readJsonBody(request);
+        const exported = repo.exportOperationalOds({ ...body, storeId: store?.id || null, _store: store, _actor: user });
+        return sendBinary(response, 200, exported.buffer, {
+          "Content-Type": "application/vnd.oasis.opendocument.spreadsheet",
+          "Content-Disposition": `attachment; filename="${exported.fileName}"`,
+          "Content-Length": exported.buffer.length
         });
       }
 
@@ -669,6 +700,11 @@ function sendText(response, statusCode, body, headers = {}) {
   response.end(body);
 }
 
+function sendBinary(response, statusCode, body, headers = {}) {
+  response.writeHead(statusCode, headers);
+  response.end(body);
+}
+
 function serveUpload(pathname, response, uploadsRoot) {
   const relativePath = pathname.replace("/uploads/", "");
   const safePath = normalize(relativePath).replace(/^(\.\.(\/|\\|$))+/, "");
@@ -685,5 +721,3 @@ function serveUpload(pathname, response, uploadsRoot) {
   });
   createReadStream(absolutePath).pipe(response);
 }
-
-

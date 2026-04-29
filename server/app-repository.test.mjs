@@ -1,5 +1,7 @@
 ﻿import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEMO_USERS } from "./constants.mjs";
 import { createAppRepository } from "./app-repository.mjs";
@@ -460,12 +462,11 @@ test("relatorios usam o mesmo fluxo de caixa do financeiro para listar transacoe
 
   const reports = repository.getReports({});
   const workbook = repository.getFinanceWorkbookView({});
-  const reportEntry = (reports.finance || []).find((entry) => entry.description === `Pagamento da venda ${sale.code}`);
+  const reportEntry = (reports.finance || []).find((entry) => entry.description === `Venda ${sale.code}`);
   const ledgerEntry = (workbook.ledger || []).find((entry) => entry.description === `Pagamento da venda ${sale.code}`);
 
   assert.ok(reportEntry);
   assert.ok(ledgerEntry);
-  assert.equal(reportEntry.description, ledgerEntry.description);
   assert.equal(Number(reportEntry.amount), Number(ledgerEntry.amount));
   repository.close();
 });
@@ -616,6 +617,285 @@ test("financeiro reverte venda do PDV pelo lancamento e remove estoque, caixa e 
   repository.close();
 });
 
+test("transferencia interna move saldo entre contas sem virar receita ou despesa", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const store = repository.getCurrentStore();
+  const sourceAccount = repository.listStoreCashAccounts(store.id).find((entry) => entry.code === "CAIXINHA_LOJA");
+  const destinationAccount = repository.listStoreCashAccounts(store.id).find((entry) => entry.code === "R_COM_DENIO");
+
+  const beforeTotal = repository.listStoreCashAccounts(store.id).reduce((sum, account) => sum + Number(account.balance_amount || 0), 0);
+
+  repository.saveStoreCashMovement({
+    entryType: "RECEITA",
+    category: "Aporte",
+    description: "Saldo de teste para transferencia",
+    amount: 100,
+    entryDate: "2026-03-15",
+    cashAccountId: sourceAccount.id,
+    _actor: actor
+  });
+
+  const afterSeedTotal = repository.listStoreCashAccounts(store.id).reduce((sum, account) => sum + Number(account.balance_amount || 0), 0);
+
+  const transfer = repository.saveStoreCashTransfer({
+    fromCashAccountId: sourceAccount.id,
+    toCashAccountId: destinationAccount.id,
+    amount: 40,
+    movementDate: "2026-03-15",
+    notes: "Transferencia interna de teste",
+    _actor: actor
+  });
+
+  const updatedAccounts = repository.listStoreCashAccounts(store.id);
+  const refreshedSource = updatedAccounts.find((entry) => Number(entry.id) === Number(sourceAccount.id));
+  const refreshedDestination = updatedAccounts.find((entry) => Number(entry.id) === Number(destinationAccount.id));
+  const transferMovements = repository.listStoreCashMovements({ storeId: store.id }).filter((entry) => Number(entry.amount || 0) === 40 && String(entry.entry_type || "").toUpperCase() === "TRANSFERENCIA");
+  const workbook = repository.getFinanceWorkbookView({ storeId: store.id });
+
+  assert.equal(Number(afterSeedTotal - beforeTotal), 100);
+  assert.equal(Number(refreshedSource.balance_amount || 0), 60);
+  assert.equal(Number(refreshedDestination.balance_amount || 0), 40);
+  assert.equal(transfer.success, true);
+  assert.equal(transferMovements.length, 2);
+  assert.equal(transferMovements.every((entry) => !["DESPESA", "RECEITA"].includes(String(entry.entry_type || "").toUpperCase())), true);
+  assert.equal(workbook.entriesAndExpenses.some((entry) => String(entry.description).includes("Transferencia interna de teste")), false);
+  repository.close();
+});
+
+test("transferencia interna permite conta de origem negativa sem bloquear a divida", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const store = repository.getCurrentStore();
+  const sourceAccount = repository.listStoreCashAccounts(store.id).find((entry) => entry.code === "CAIXINHA_LOJA");
+  const destinationAccount = repository.listStoreCashAccounts(store.id).find((entry) => entry.code === "R_COM_DENIO");
+
+  repository.saveStoreCashMovement({
+    entryType: "DESPESA",
+    category: "Ajuste",
+    description: "Gerar saldo negativo para teste",
+    amount: 30,
+    entryDate: "2026-03-15",
+    cashAccountId: sourceAccount.id,
+    _actor: actor
+  });
+
+  const beforeSource = repository.listStoreCashAccounts(store.id).find((entry) => Number(entry.id) === Number(sourceAccount.id));
+  const beforeDestination = repository.listStoreCashAccounts(store.id).find((entry) => Number(entry.id) === Number(destinationAccount.id));
+
+  const transfer = repository.saveStoreCashTransfer({
+    fromCashAccountId: sourceAccount.id,
+    toCashAccountId: destinationAccount.id,
+    amount: 20,
+    movementDate: "2026-03-15",
+    notes: "Transferencia com origem negativa",
+    _actor: actor
+  });
+
+  const updatedAccounts = repository.listStoreCashAccounts(store.id);
+  const refreshedSource = updatedAccounts.find((entry) => Number(entry.id) === Number(sourceAccount.id));
+  const refreshedDestination = updatedAccounts.find((entry) => Number(entry.id) === Number(destinationAccount.id));
+
+  assert.equal(Number(beforeSource.balance_amount || 0) < 0, true);
+  assert.equal(Number(beforeDestination.balance_amount || 0) >= 0, true);
+  assert.equal(transfer.success, true);
+  assert.equal(Number(refreshedSource.balance_amount || 0), Number(beforeSource.balance_amount || 0) - 20);
+  assert.equal(Number(refreshedDestination.balance_amount || 0), Number(beforeDestination.balance_amount || 0) + 20);
+  repository.close();
+});
+
+test("transferencia interna aceita valor negativo e transfere a divida para a conta de destino", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const store = repository.getCurrentStore();
+  const sourceAccount = repository.listStoreCashAccounts(store.id).find((entry) => entry.code === "CAIXINHA_LOJA");
+  const destinationAccount = repository.listStoreCashAccounts(store.id).find((entry) => entry.code === "R_COM_DENIO");
+
+  const beforeSource = repository.listStoreCashAccounts(store.id).find((entry) => Number(entry.id) === Number(sourceAccount.id));
+  const beforeDestination = repository.listStoreCashAccounts(store.id).find((entry) => Number(entry.id) === Number(destinationAccount.id));
+
+  const transfer = repository.saveStoreCashTransfer({
+    fromCashAccountId: sourceAccount.id,
+    toCashAccountId: destinationAccount.id,
+    amount: -25,
+    movementDate: "2026-03-15",
+    notes: "Transferencia de divida",
+    _actor: actor
+  });
+
+  const updatedAccounts = repository.listStoreCashAccounts(store.id);
+  const refreshedSource = updatedAccounts.find((entry) => Number(entry.id) === Number(sourceAccount.id));
+  const refreshedDestination = updatedAccounts.find((entry) => Number(entry.id) === Number(destinationAccount.id));
+  const transferMovements = repository.listStoreCashMovements({ storeId: store.id }).filter((entry) => Number(entry.amount || 0) === -25 && String(entry.entry_type || "").toUpperCase() === "TRANSFERENCIA");
+
+  assert.equal(transfer.success, true);
+  assert.equal(Number(refreshedSource.balance_amount || 0), Number(beforeSource.balance_amount || 0) + 25);
+  assert.equal(Number(refreshedDestination.balance_amount || 0), Number(beforeDestination.balance_amount || 0) - 25);
+  assert.equal(transferMovements.length, 2);
+  repository.close();
+});
+
+test("pdv consome camadas antigas primeiro e restauracao recompõe os custos originais", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const store = repository.getCurrentStore();
+  const product = repository.saveCatalogItem({
+    name: "Produto PDV em camadas",
+    category: "Acessórios",
+    itemCondition: "NOVA",
+    stockQuantity: 1,
+    minStock: 0,
+    costAmount: 10,
+    priceAmount: 25,
+    _actor: actor
+  });
+
+  repository.replenishCatalogItem(product.id, {
+    quantity: 1,
+    costAmount: 20,
+    priceAmount: 25,
+    _actor: actor
+  });
+
+  const session = repository.openCashSession({
+    openingAmount: 0,
+    paymentMethod: "CAIXINHA_LOJA",
+    notes: "Teste PDV camadas",
+    _actor: actor
+  });
+
+  const sale = repository.createPosSale({
+    cashSessionId: session.id,
+    items: [{ itemType: "PRODUCT", catalogItemId: product.id, quantity: 1 }],
+    paymentMethod: "CAIXINHA_LOJA",
+    _actor: actor
+  });
+
+  assert.equal(Number(sale.items[0].unit_cost || 0), 10);
+
+  const afterSale = repository.getCatalogItem(product.id);
+  assert.equal(Number(afterSale.stock_quantity || 0), 1);
+  assert.equal(Number(afterSale.stock_cost_value || 0), 20);
+  assert.equal(Number(afterSale.cost_amount || 0), 20);
+
+  repository.deletePosSale(sale.id, { actor, store });
+
+  const restored = repository.getCatalogItem(product.id);
+  assert.equal(Number(restored.stock_quantity || 0), 2);
+  assert.equal(Number(restored.stock_cost_value || 0), 30);
+  assert.equal(Number(restored.cost_amount || 0), 20);
+  repository.close();
+});
+
+test("edicao manual de custo nao altera valores dos lotes existentes", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const created = repository.saveCatalogItem({
+    name: "Item edicao custo lote",
+    category: "Acessórios",
+    itemCondition: "NOVA",
+    stockQuantity: 3,
+    minStock: 0,
+    costAmount: 10,
+    priceAmount: 20,
+    _actor: actor
+  });
+
+  const updated = repository.saveCatalogItem({
+    ...created,
+    itemCondition: created.item_condition,
+    stockQuantity: created.stock_quantity,
+    minStock: created.min_stock,
+    costAmount: 15,
+    priceAmount: 25,
+    _actor: actor
+  });
+
+  const batchSummary = repository.db.prepare(
+    "SELECT SUM(quantity_remaining * unit_cost) AS total_cost, SUM(quantity_remaining * unit_price) AS total_price FROM catalog_stock_batches WHERE catalog_item_id = :id"
+  ).get({ id: created.id });
+  const refreshed = repository.getCatalogItem(created.id);
+
+  assert.equal(Number(updated.cost_amount || 0), 15);
+  assert.equal(Number(updated.price_amount || 0), 25);
+  assert.equal(Number(refreshed.stock_cost_value || 0), 30);
+  assert.equal(Number(batchSummary.total_cost || 0), 30);
+  assert.equal(Number(batchSummary.total_price || 0), 60);
+  repository.close();
+});
+
+test("valor de estoque soma quantidade restante por lote sem usar media", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const created = repository.saveCatalogItem({
+    name: "Item soma lote exata",
+    category: "Acessórios",
+    itemCondition: "NOVA",
+    stockQuantity: 2,
+    minStock: 0,
+    costAmount: 10,
+    priceAmount: 30,
+    _actor: actor
+  });
+
+  repository.replenishCatalogItem(created.id, {
+    quantity: 1,
+    costAmount: 10.01,
+    priceAmount: 40,
+    _actor: actor
+  });
+
+  const refreshed = repository.getCatalogItem(created.id);
+  const listed = repository.listCatalogItems({}).find((item) => Number(item.id) === Number(created.id));
+
+  assert.equal(Number(refreshed.stock_quantity || 0), 3);
+  assert.equal(Number(refreshed.cost_amount || 0), 10.01);
+  assert.equal(Number(refreshed.stock_cost_value || 0), 30.01);
+  assert.equal(Number(refreshed.stock_value || 0), 120);
+  assert.equal(Number(listed.stock_cost_value || 0), 30.01);
+  assert.equal(Number(listed.stock_value || 0), 120);
+  repository.close();
+});
+
+test("edicao de lote altera apenas a reposicao selecionada", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const created = repository.saveCatalogItem({
+    name: "Item edicao lote individual",
+    category: "Acessórios",
+    itemCondition: "NOVA",
+    stockQuantity: 1,
+    minStock: 0,
+    costAmount: 30,
+    priceAmount: 50,
+    _actor: actor
+  });
+
+  repository.replenishCatalogItem(created.id, {
+    quantity: 3,
+    costAmount: 11,
+    priceAmount: 50,
+    _actor: actor
+  });
+
+  const before = repository.getCatalogItem(created.id);
+  const latestLot = before.replenishment_history[0];
+  const updated = repository.updateCatalogReplenishment(latestLot.id, {
+    costAmount: 12,
+    priceAmount: 55,
+    _actor: actor
+  });
+
+  const lots = repository.db.prepare(
+    "SELECT quantity_remaining, unit_cost, unit_price FROM catalog_stock_batches WHERE catalog_item_id = :id ORDER BY created_at ASC, id ASC"
+  ).all({ id: created.id });
+
+  assert.deepEqual(lots.map((lot) => `${lot.quantity_remaining}x${lot.unit_cost}/${lot.unit_price}`), ["1x30/50", "3x12/55"]);
+  assert.equal(Number(updated.stock_cost_value || 0), 66);
+  assert.equal(Number(updated.stock_value || 0), 220);
+  repository.close();
+});
+
 test("reposicao respeita a conta selecionada no saldo e no financeiro", () => {
   const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
   const actor = getActor(repository);
@@ -650,6 +930,64 @@ test("reposicao respeita a conta selecionada no saldo e no financeiro", () => {
   assert.equal(ledgerEntry.cash_account_id, targetAccount.id);
   assert.equal(Number(refreshedAccount.balance_amount), -20);
   repository.close();
+});
+
+test("estoque inicial cria historico de reposicao vinculado ao financeiro", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const store = repository.getCurrentStore();
+  const cashAccount = repository.listStoreCashAccounts(store.id).find((entry) => Number(entry.active || 0) === 1);
+
+  const created = repository.saveCatalogItem({
+    name: "Item estoque inicial vinculado",
+    category: "Acessórios",
+    itemCondition: "NOVA",
+    stockQuantity: 2,
+    minStock: 0,
+    costAmount: 30,
+    priceAmount: 50,
+    cashAccountId: cashAccount.id,
+    _actor: actor
+  });
+
+  const refreshed = repository.getCatalogItem(created.id);
+  const initialEntry = (refreshed.replenishment_history || [])[0];
+  assert.ok(initialEntry?.id);
+  assert.ok(initialEntry?.finance_entry_id);
+  repository.close();
+});
+
+test("reabrir base legada sem lotes gera snapshot de estoque por lotes", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "crm-lotes-"));
+  const dbPath = join(tempDir, "legacy.sqlite");
+
+  try {
+    const seeded = createAppRepository({ dbPath, seedDemo: true });
+    const actor = getActor(seeded);
+    seeded.saveCatalogItem({
+      name: "Item legado snapshot",
+      category: "Acessórios",
+      itemCondition: "NOVA",
+      stockQuantity: 3,
+      minStock: 0,
+      costAmount: 12,
+      priceAmount: 25,
+      _actor: actor
+    });
+    seeded.db.exec("DROP TABLE catalog_stock_consumptions;");
+    seeded.db.exec("DROP TABLE catalog_stock_batches;");
+    seeded.db.exec("DELETE FROM stock_replenishments;");
+    seeded.close();
+
+    const reopened = createAppRepository({ dbPath, seedDemo: false });
+    const batchSummary = reopened.db.prepare("SELECT COUNT(*) AS total, SUM(quantity_remaining) AS units FROM catalog_stock_batches").get();
+
+    assert.equal(Number(batchSummary.total || 0) >= 1, true);
+    assert.equal(Number(batchSummary.units || 0) >= 3, true);
+    reopened.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("estoque inicial e reposicao geram despesa no financeiro e aparecem em relatorios", () => {

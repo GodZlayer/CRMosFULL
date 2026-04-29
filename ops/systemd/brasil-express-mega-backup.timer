@@ -1,0 +1,11 @@
+[Unit]
+Description=Agenda backup snapshot do Brasil Express CRM para MEGA
+
+[Timer]
+OnCalendar=*-*-* 00/6:00:00
+Persistent=true
+Unit=brasil-express-mega-backup.service
+
+[Install]
+WantedBy=timers.target
+

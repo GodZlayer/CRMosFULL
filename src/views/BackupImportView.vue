@@ -41,6 +41,13 @@
         <i class="fa-solid fa-sliders me-2"></i>
         Administração
       </button>
+      <button
+        class="btn rounded-pill"
+        :class="currentTab === 'transfer' ? 'btn-primary' : 'btn-outline-secondary'"
+        @click="openTransferTab">
+        <i class="fa-solid fa-right-left me-2"></i>
+        Transferência interna
+      </button>
     </div>
 
     <div v-if="currentTab === 'operations'" class="row g-4">
@@ -158,6 +165,10 @@
               <i class="fa-solid fa-file-import me-2"></i>
               {{ busy.odsImport ? "Importando planilhas..." : "Importar links ODS" }}
             </button>
+            <button class="btn btn-outline-success rounded-pill" :disabled="busy.odsExport" @click="downloadOperationalOds">
+              <i class="fa-solid fa-file-arrow-down me-2"></i>
+              {{ busy.odsExport ? "Gerando ODS..." : "Exportar ODS de conferência" }}
+            </button>
           </div>
 
           <div class="panel-card bg-body-tertiary border-0">
@@ -166,6 +177,7 @@
               <li>Links públicos do Google Sheets com acesso de leitura</li>
               <li>ou URLs diretas para arquivos `.ods`</li>
               <li>Os nomes lógicos já são tratados como `Serviços 2026.ods` e `26 CX Loja ok em 29 02.ods`</li>
+              <li>O botão de exportação gera um `.ods` com abas de lançamentos, estoque, saldos, OS, clientes e PDV</li>
             </ul>
           </div>
         </section>
@@ -173,6 +185,105 @@
     </div>
 
     <div v-else class="d-grid gap-4">
+      <section v-if="currentTab === 'transfer'" class="panel-card d-grid gap-4">
+        <div class="d-flex flex-wrap justify-content-between gap-3 align-items-start">
+          <div>
+            <div class="small fw-semibold mb-2">Movimentação interna</div>
+            <h2 class="h4 fw-bold mb-1">Transferir saldo entre contas</h2>
+            <p class="mb-0">
+              Use esta aba para mover dinheiro entre contas da loja sem criar receita ou despesa.
+            </p>
+          </div>
+          <div class="backup-import__summary-card">
+            <span>Contas ativas</span>
+            <strong>{{ cashAccounts.filter((item) => Number(item.active) === 1).length }}</strong>
+          </div>
+        </div>
+
+        <div class="row g-4">
+          <div class="col-12 col-xl-6">
+            <form class="row g-3" @submit.prevent="submitTransferForm">
+              <div class="col-md-6">
+                <label class="form-label fw-semibold">Conta de origem</label>
+                <select v-model.number="transferForm.fromCashAccountId" class="form-select rounded-4" required>
+                  <option :value="0">Selecione</option>
+                  <option v-for="item in activeCashAccounts" :key="item.id" :value="item.id">
+                    {{ item.name }} | {{ formatMoney(item.balance_amount) }}
+                  </option>
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-semibold">Conta de destino</label>
+                <select v-model.number="transferForm.toCashAccountId" class="form-select rounded-4" required>
+                  <option :value="0">Selecione</option>
+                  <option v-for="item in activeCashAccounts" :key="item.id" :value="item.id">
+                    {{ item.name }} | {{ formatMoney(item.balance_amount) }}
+                  </option>
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-semibold">Valor</label>
+                <input v-model="transferForm.amount" type="text" inputmode="decimal" class="form-control rounded-4" placeholder="-573,10" />
+                <div class="form-text">Use valor negativo para transferir uma dívida; a origem melhora e o destino assume o saldo negativo.</div>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-semibold">Data</label>
+                <input v-model="transferForm.movementDate" type="date" class="form-control rounded-4" />
+              </div>
+              <div class="col-12">
+                <label class="form-label fw-semibold">Observação</label>
+                <textarea v-model="transferForm.notes" rows="3" class="form-control rounded-4" placeholder="Opcional: motivo, referencia interna, ajuste de saldo..."></textarea>
+              </div>
+              <div class="col-12 d-flex flex-wrap gap-2">
+                <button class="btn btn-primary rounded-pill" :disabled="busy.transferSave">
+                  <i class="fa-solid fa-right-left me-2"></i>
+                  {{ busy.transferSave ? "Transferindo..." : "Transferir saldo" }}
+                </button>
+                <button type="button" class="btn btn-outline-secondary rounded-pill" @click="resetTransferForm">
+                  Limpar
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <div class="col-12 col-xl-6">
+            <section class="panel-card h-100 d-grid gap-3">
+              <div>
+                <div class="small fw-semibold mb-2">Contas da loja</div>
+                <h3 class="h5 fw-bold mb-1">Saldos disponíveis</h3>
+                <p class="mb-0">Selecione as contas abaixo para movimentar saldo entre elas.</p>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-dark table-hover align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th>Código</th>
+                      <th>Conta</th>
+                      <th>Status</th>
+                      <th class="text-end">Saldo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="item in cashAccounts" :key="item.id">
+                      <td>{{ item.code }}</td>
+                      <td>{{ item.name }}</td>
+                      <td>{{ Number(item.active || 0) === 1 ? "Ativa" : "Inativa" }}</td>
+                      <td class="text-end">{{ formatMoney(item.balance_amount) }}</td>
+                    </tr>
+                    <tr v-if="!cashAccounts.length">
+                      <td colspan="4" class="text-center py-4">Nenhuma conta cadastrada.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="small">
+                A transferência interna só move saldo entre contas da loja. Uma conta de origem negativa não bloqueia a operação. Ela não entra como receita nem como despesa.
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
       <section class="panel-card d-grid gap-3">
         <div class="d-flex flex-wrap justify-content-between gap-3 align-items-start">
           <div>
@@ -575,7 +686,7 @@ import { notifyError, notifySuccess } from "../services/ui";
 import { useSessionStore } from "../stores/session";
 
 const session = useSessionStore();
-const currentTab = ref<"operations" | "admin">("operations");
+const currentTab = ref<"operations" | "admin" | "transfer">("operations");
 const adminLoaded = ref(false);
 
 const mysqlForm = reactive({
@@ -598,11 +709,13 @@ const busy = reactive({
   mysqlDump: false,
   mysqlImport: false,
   odsImport: false,
+  odsExport: false,
   adminLoad: false,
   userSave: false,
   cashSave: false,
   categorySave: false,
-  ruleSave: false
+  ruleSave: false,
+  transferSave: false
 });
 
 const adminUsers = ref<AdminUser[]>([]);
@@ -643,8 +756,17 @@ const automationRuleForm = reactive({
   exclude_used: true
 });
 
+const transferForm = reactive({
+  fromCashAccountId: 0,
+  toCashAccountId: 0,
+  amount: 0,
+  movementDate: getTodayString(),
+  notes: ""
+});
+
 const lastAction = ref("");
 const lastResult = ref<any | null>(null);
+const activeCashAccounts = computed(() => cashAccounts.value.filter((item) => Number(item.active || 0) === 1));
 
 const lastActionLabel = computed(() => lastAction.value || "Nenhuma operação executada");
 
@@ -698,6 +820,24 @@ function formatMoney(value: number) {
     style: "currency",
     currency: "BRL"
   }).format(Number(value || 0));
+}
+
+function getTodayString() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function parseTransferAmount(value: unknown) {
+  if (typeof value === "number") {
+    return value;
+  }
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return Number.NaN;
+  }
+  if (text.includes(",")) {
+    return Number(text.replace(/\./g, "").replace(",", "."));
+  }
+  return Number(text);
 }
 
 function resetUserForm() {
@@ -756,6 +896,14 @@ function resetAutomationRuleForm() {
   automationRuleForm.exclude_used = true;
 }
 
+function resetTransferForm() {
+  transferForm.amount = 0;
+  transferForm.movementDate = getTodayString();
+  transferForm.notes = "";
+  transferForm.fromCashAccountId = Number(activeCashAccounts.value[0]?.id || 0);
+  transferForm.toCashAccountId = Number(activeCashAccounts.value[1]?.id || activeCashAccounts.value[0]?.id || 0);
+}
+
 function editAutomationRule(item: AutomationRule) {
   automationRuleForm.id = item.id;
   automationRuleForm.code = item.code;
@@ -777,6 +925,14 @@ async function openAdminTab() {
   if (!adminLoaded.value) {
     await loadAdminData();
   }
+}
+
+async function openTransferTab() {
+  currentTab.value = "transfer";
+  if (!adminLoaded.value) {
+    await loadAdminData();
+  }
+  resetTransferForm();
 }
 
 async function loadAdminData(force = false) {
@@ -804,6 +960,42 @@ async function loadAdminData(force = false) {
     await notifyError(error);
   } finally {
     busy.adminLoad = false;
+  }
+}
+
+async function submitTransferForm() {
+  busy.transferSave = true;
+  try {
+    if (!Number(transferForm.fromCashAccountId || 0)) {
+      throw new Error("Selecione a conta de origem.");
+    }
+    if (!Number(transferForm.toCashAccountId || 0)) {
+      throw new Error("Selecione a conta de destino.");
+    }
+    if (Number(transferForm.fromCashAccountId) === Number(transferForm.toCashAccountId)) {
+      throw new Error("A conta de origem precisa ser diferente da conta de destino.");
+    }
+    const amount = parseTransferAmount(transferForm.amount);
+    if (!Number.isFinite(amount) || amount === 0) {
+      throw new Error("Informe um valor diferente de zero para transferir.");
+    }
+
+    const response = await api.transferStoreCash({
+      fromCashAccountId: Number(transferForm.fromCashAccountId),
+      toCashAccountId: Number(transferForm.toCashAccountId),
+      amount,
+      movementDate: transferForm.movementDate || getTodayString(),
+      notes: transferForm.notes.trim()
+    });
+    lastAction.value = "Transferência interna realizada";
+    lastResult.value = response.data;
+    resetTransferForm();
+    await loadAdminData(true);
+    await notifySuccess("Transferência registrada", "Saldo movido entre contas internas.");
+  } catch (error) {
+    await notifyError(error);
+  } finally {
+    busy.transferSave = false;
   }
 }
 
@@ -890,6 +1082,26 @@ async function runGoogleLinksImport() {
     await notifyError(error);
   } finally {
     busy.odsImport = false;
+  }
+}
+
+async function downloadOperationalOds() {
+  busy.odsExport = true;
+  try {
+    const { blob, fileName } = await api.downloadOperationalOds({});
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    window.URL.revokeObjectURL(url);
+    lastAction.value = "Exportação ODS gerada";
+    lastResult.value = { fileName, exportedAt: new Date().toISOString() };
+    await notifySuccess("Arquivo exportado", fileName);
+  } catch (error) {
+    await notifyError(error);
+  } finally {
+    busy.odsExport = false;
   }
 }
 

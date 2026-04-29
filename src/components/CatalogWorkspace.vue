@@ -60,7 +60,10 @@
  <MetricCard :title="storeInventoryOnly ? 'Itens em loja' : 'Itens catalogados'" :value="items.length" hint="Base viva conectada ao estoque e ao uso operacional." icon="fa-solid fa-cubes" tone="primary" />
  </div>
  <div class="col-lg-3 col-md-6">
- <MetricCard title="Valor em estoque" :value="currency(stockValue)" hint="Capital total dos itens visíveis no filtro atual." icon="fa-solid fa-warehouse" tone="success" />
+ <MetricCard title="Estoque por custo" :value="currency(stockCostValue)" hint="Custo total dos itens visíveis no filtro atual." icon="fa-solid fa-boxes-stacked" tone="secondary" />
+ </div>
+ <div class="col-lg-3 col-md-6">
+ <MetricCard title="Estoque por venda" :value="currency(stockSaleValue)" hint="Valor de venda total dos itens visíveis no filtro atual." icon="fa-solid fa-warehouse" tone="success" />
  </div>
  <div class="col-lg-3 col-md-6">
  <MetricCard title="Abaixo do mínimo" :value="lowStockCount" hint="Itens pedindo reposição ou atenão de compra." icon="fa-solid fa-triangle-exclamation" tone="danger" />
@@ -79,7 +82,9 @@
  :allow-csv="true"
  :allow-print="true"
  :allow-auto-columns="true"
+ :print-summary-fields="inventoryPrintSummaryFields"
  :selectable-rows="true"
+ :selected-row-keys="selectedIds"
  responsive-mode="auto"
  :card-title="(row) => row.name || 'Item'"
  :card-subtitle="(row) => [row.brand, row.category, row.subcategory].filter(Boolean).join(' | ')"
@@ -87,6 +92,7 @@
  :card-badge="catalogCardBadge"
  :card-actions="catalogCardActions"
  @selection-change="handleSelectionChange"
+ @selection-keys-change="handleSelectionKeysChange"
  @row-click="openDetail"
  />
 
@@ -154,8 +160,15 @@
  </div>
  <div class="col-lg-3 col-md-6">
  <div class="panel-card h-100">
- <div class="small fw-semibold mb-2">Valor em estoque</div>
- <div class="display-6 fw-bold mb-1">{{ currency(selectedItem.stock_value) }}</div>
+ <div class="small fw-semibold mb-2">Estoque por custo</div>
+ <div class="display-6 fw-bold mb-1">{{ currency(stockCostForItem(selectedItem)) }}</div>
+ <div>Soma exata dos lotes restantes.</div>
+ </div>
+ </div>
+ <div class="col-lg-3 col-md-6">
+ <div class="panel-card h-100">
+ <div class="small fw-semibold mb-2">Estoque por venda</div>
+ <div class="display-6 fw-bold mb-1">{{ currency(stockSaleForItem(selectedItem)) }}</div>
  <div>Margem unitária {{ currency(selectedItem.unit_margin) }} | Lucro {{ percentLabel(selectedItem.profit_percent) }}.</div>
  </div>
  </div>
@@ -178,10 +191,8 @@
  <div class="col-lg-6">
  <div class="panel-card h-100">
  <div class="small fw-semibold mb-3">Histórico comercial</div>
- <div class="mb-2"><strong>Custo unitário:</strong> {{ currency(selectedItem.cost_amount) }}</div>
- <div class="mb-2"><strong>Preço de venda:</strong> {{ currency(selectedItem.price_amount) }}</div>
- <div class="mb-2"><strong>Média compra:</strong> {{ currency(selectedItem.average_cost_amount) }}</div>
- <div class="mb-2"><strong>Média venda:</strong> {{ currency(selectedItem.average_price_amount) }}</div>
+ <div class="mb-2"><strong>Valor de compra atual:</strong> {{ currency(selectedItem.cost_amount) }}</div>
+ <div class="mb-2"><strong>Preço de venda atual:</strong> {{ currency(selectedItem.price_amount) }}</div>
  <div class="mb-2"><strong>Último custo anterior:</strong> {{ currency(selectedItem.last_previous_cost_amount) }}</div>
  <div class="mb-2"><strong>Último preço anterior:</strong> {{ currency(selectedItem.last_previous_price_amount) }}</div>
  <div class="mb-2"><strong>Saída total:</strong> {{ selectedItem.total_quantity_used }}</div>
@@ -193,44 +204,58 @@
  </div>
 
  <div class="panel-card">
- <div class="small fw-semibold mb-3">Histórico de reposição</div>
- <div v-if="selectedItem.replenishment_history.length" class="table-responsive">
+ <div class="small fw-semibold mb-3">Lotes de estoque</div>
+ <div v-if="selectedItem.stock_batches.length" class="table-responsive">
  <table class="table align-middle">
  <thead>
  <tr>
  <th>Data</th>
- <th>Qtd</th>
- <th>Novo custo</th>
- <th>Novo preço</th>
- <th>Ult. custo ant.</th>
- <th>Ult. preço ant.</th>
+ <th>Origem</th>
+ <th>Qtd inicial</th>
+ <th>Qtd restante</th>
+ <th>Custo lote</th>
+ <th>Venda lote</th>
+ <th>Total custo</th>
+ <th>Total venda</th>
  <th>Responsável</th>
  <th>Ações</th>
  </tr>
  </thead>
  <tbody>
- <tr v-for="(entry, index) in selectedItem.replenishment_history" :key="entry.id">
+ <tr v-for="entry in selectedItem.stock_batches" :key="entry.id">
  <td>{{ dateLabel(entry.created_at) }}</td>
+ <td>{{ stockBatchSourceLabel(entry.source_type) }}</td>
  <td>{{ entry.quantity }}</td>
- <td>{{ currency(entry.new_cost_amount) }}</td>
- <td>{{ currency(entry.new_price_amount) }}</td>
- <td>{{ currency(entry.previous_cost_amount) }}</td>
- <td>{{ currency(entry.previous_price_amount) }}</td>
+ <td>{{ entry.quantity_remaining }}</td>
+ <td>{{ currency(entry.unit_cost) }}</td>
+ <td>{{ currency(entry.unit_price) }}</td>
+ <td>{{ currency(entry.remaining_cost_total ?? Number(entry.quantity_remaining || 0) * Number(entry.unit_cost || 0)) }}</td>
+ <td>{{ currency(entry.remaining_price_total ?? Number(entry.quantity_remaining || 0) * Number(entry.unit_price || 0)) }}</td>
  <td>{{ entry.actor_name || 'Sistema' }}</td>
  <td>
+ <div class="d-inline-flex flex-wrap gap-2">
  <button
- class="btn btn-sm btn-outline-danger rounded-pill"
- :disabled="revertingReplenishmentId === entry.id || index !== 0"
- @click="revertReplenishment(entry, index)">
- <i class="fa-solid fa-rotate-left me-1"></i>
- {{ revertingReplenishmentId === entry.id ? 'Desfazendo...' : 'Desfazer' }}
+ class="btn btn-sm btn-outline-primary rounded-pill"
+ :disabled="!canEditStockBatch(entry)"
+ @click="openEditStockBatch(entry)">
+ <i class="fa-solid fa-pen me-1"></i>
+ Editar lote
  </button>
+ <button
+ v-if="entry.source_type === 'REPLENISHMENT' && entry.source_id"
+ class="btn btn-sm btn-outline-danger rounded-pill"
+ :disabled="revertingReplenishmentId === entry.source_id || !canRevertStockBatch(entry)"
+ @click="revertStockBatchReplenishment(entry)">
+ <i class="fa-solid fa-rotate-left me-1"></i>
+ {{ revertingReplenishmentId === entry.source_id ? 'Desfazendo...' : 'Desfazer' }}
+ </button>
+ </div>
  </td>
  </tr>
  </tbody>
  </table>
  </div>
- <div v-else>Nenhuma reposição registrada para este item.</div>
+ <div v-else>Nenhum lote registrado para este item.</div>
  </div>
 
  <div class="panel-card">
@@ -266,6 +291,52 @@
  <div v-else>Nenhuma OS consumiu este item ate o momento.</div>
  </div>
  </div>
+ </ModalDialog>
+
+ <ModalDialog v-model="showLotEdit" title="Editar lote de estoque" :eyebrow="lotEditTarget?.created_at ? dateLabel(lotEditTarget.created_at) : eyebrow" size="lg">
+ <form v-if="lotEditTarget" class="row g-4" @submit.prevent="submitLotEdit">
+ <div class="col-12">
+ <div class="panel-card">
+ <div class="small fw-semibold mb-2">Lote de estoque</div>
+ <div class="row g-3">
+ <div class="col-md-4">
+ <div class="small">Quantidade original</div>
+ <div class="fw-bold">{{ lotEditTarget.quantity }}</div>
+ </div>
+ <div class="col-md-4">
+ <div class="small">Quantidade restante</div>
+ <div class="fw-bold">{{ lotEditTarget.quantity_remaining }}</div>
+ </div>
+ <div class="col-md-4">
+ <div class="small">Origem</div>
+ <div class="fw-bold">{{ stockBatchSourceLabel(lotEditTarget.source_type) }}</div>
+ </div>
+ </div>
+ <div v-if="!canEditStockBatch(lotEditTarget)" class="alert alert-warning mt-3 mb-0">
+ Este lote já teve consumo. Para manter exatidão histórica, custo e venda não podem ser alterados depois de usados em OS ou PDV.
+ </div>
+ </div>
+ </div>
+ <div class="col-md-6">
+ <label class="form-label fw-semibold required-label">Custo do lote</label>
+ <input v-model.number="lotEditForm.costAmount" type="number" min="0" step="0.01" class="form-control rounded-4" required :disabled="!canEditStockBatch(lotEditTarget)" />
+ </div>
+ <div class="col-md-6">
+ <label class="form-label fw-semibold required-label">Venda do lote</label>
+ <input v-model.number="lotEditForm.priceAmount" type="number" min="0" step="0.01" class="form-control rounded-4" required :disabled="!canEditStockBatch(lotEditTarget)" />
+ </div>
+ <div class="col-12">
+ <label class="form-label fw-semibold">Observação do lote</label>
+ <textarea v-model="lotEditForm.notes" class="form-control rounded-4" rows="3" :disabled="!canEditStockBatch(lotEditTarget)"></textarea>
+ </div>
+ <div class="col-12 d-flex justify-content-end gap-2">
+ <button type="button" class="btn btn-light rounded-pill" @click="showLotEdit = false">Cancelar</button>
+ <button class="btn btn-primary rounded-pill" :disabled="busyLotEdit || !canEditStockBatch(lotEditTarget)">
+ <i class="fa-solid fa-floppy-disk me-2"></i>
+ {{ busyLotEdit ? 'Salvando...' : 'Salvar lote' }}
+ </button>
+ </div>
+ </form>
  </ModalDialog>
 
  <ModalDialog v-model="showForm" :title="form.id ? 'Editar item' : createLabel" :eyebrow="eyebrow" size="xl">
@@ -380,13 +451,13 @@
  <div class="small">{{ restockTarget.sku || 'Sem SKU' }}<span v-if="restockTarget.brand"> | {{ restockTarget.brand }}</span> | {{ restockTarget.category }}</div>
  </div>
  <div class="col-md-3">
- <div class="small fw-semibold mb-2">Média compra</div>
- <div class="fw-bold">{{ currency(restockTarget.average_cost_amount) }}</div>
+ <div class="small fw-semibold mb-2">Compra atual</div>
+ <div class="fw-bold">{{ currency(restockTarget.cost_amount) }}</div>
  <div class="small">Ult. ant. {{ currency(restockTarget.last_previous_cost_amount) }}</div>
  </div>
  <div class="col-md-3">
- <div class="small fw-semibold mb-2">Média venda</div>
- <div class="fw-bold">{{ currency(restockTarget.average_price_amount) }}</div>
+ <div class="small fw-semibold mb-2">Venda atual</div>
+ <div class="fw-bold">{{ currency(restockTarget.price_amount) }}</div>
  <div class="small">Ult. ant. {{ currency(restockTarget.last_previous_price_amount) }}</div>
  </div>
  </div>
@@ -612,7 +683,7 @@ import { api } from "../services/api";
 import { currency, labelFor, toneFor } from "../services/format";
 import { notifyError, notifySuccess } from "../services/ui";
 import { useSessionStore } from "../stores/session";
-import type { CatalogDeleteResult, CatalogItem, CatalogItemDetail, StockReplenishment } from "../services/types";
+import type { CatalogDeleteResult, CatalogItem, CatalogItemDetail, CatalogStockBatch, StockReplenishment } from "../services/types";
 
 const props = defineProps<{
  title: string;
@@ -627,14 +698,18 @@ const session = useSessionStore();
 const catalogTable = ref<any>(null);
 const items = ref<CatalogItem[]>([]);
 const selectedItem = ref<CatalogItemDetail | null>(null);
-const selectedRows = ref<CatalogItem[]>([]);
+const selectedRowIds = ref<number[]>([]);
+const selectedRowsMap = ref(new Map<number, CatalogItem>());
 const showDetail = ref(false);
 const showForm = ref(false);
 const showRestock = ref(false);
+const showLotEdit = ref(false);
 const showBatchRestock = ref(false);
 const showBatchCreate = ref(false);
 const restockTarget = ref<CatalogItemDetail | null>(null);
+const lotEditTarget = ref<CatalogStockBatch | null>(null);
 const revertingReplenishmentId = ref(0);
+const busyLotEdit = ref(false);
 const cashAccountOptions = ref<Array<{ id: number; code: string; label: string }>>([]);
 const batchRestockRows = ref<Array<{ id: number; name: string; quantity: number; costAmount: number; priceAmount: number; additionalCost: number; notes: string; generateFinanceEntry?: boolean; cashAccountId?: number }>>([]);
 const batchCreateRows = ref<Array<{ sku: string; name: string; brand: string; category: string; subcategory: string; itemCondition: string; stockQuantity: number; minStock: number; costAmount: number; priceAmount: number; generateFinanceEntry: boolean; cashAccountId: number }>>([]);
@@ -677,16 +752,34 @@ const restockForm = reactive({
  cashAccountId: 0
 });
 
-const stockValue = computed(() => items.value.reduce((sum, item) => sum + Number(item.stock_value || 0), 0));
+const lotEditForm = reactive({
+ costAmount: 0,
+ priceAmount: 0,
+ notes: ""
+});
+
+const stockCostValue = computed(() => items.value.reduce((sum, item) => sum + stockCostForItem(item), 0));
+const stockSaleValue = computed(() => items.value.reduce((sum, item) => sum + stockSaleForItem(item), 0));
 const lowStockCount = computed(() => items.value.filter((item) => Number(item.stock_quantity) <= Number(item.min_stock)).length);
 const averageProfit = computed(() => items.value.length ? items.value.reduce((sum, item) => sum + Number(item.profit_percent || 0), 0) / items.value.length : 0);
 const averageProfitLabel = computed(() => percentLabel(averageProfit.value));
 const subcategoryOptions = computed(() => session.meta?.catalogSubcategoriesMap?.[form.category] || []);
 const showStockSetupFields = computed(() => form.locationType === "ESTOQUE");
-const selectedIds = computed(() => selectedRows.value.map((item) => Number(item.id)).filter(Boolean));
+const selectedIds = computed(() => selectedRowIds.value);
+const selectedRows = computed(() => selectedIds.value.map((id) => selectedRowsMap.value.get(id)).filter(Boolean) as CatalogItem[]);
 const selectedCount = computed(() => selectedIds.value.length);
 const defaultCashAccountId = computed(() => Number(cashAccountOptions.value[0]?.id || 0));
 const batchCreateEstimatedExpense = computed(() => batchCreateRows.value.reduce((sum, item) => sum + (item.generateFinanceEntry ? (Number(item.stockQuantity || 0) * Number(item.costAmount || 0)) : 0), 0));
+
+function stockCostForItem(item: Pick<CatalogItem, "stock_quantity" | "cost_amount" | "stock_cost_value"> | null) {
+ if (!item) return 0;
+ return Number(item.stock_cost_value ?? (Number(item.stock_quantity || 0) * Number(item.cost_amount || 0)));
+}
+
+function stockSaleForItem(item: Pick<CatalogItem, "stock_quantity" | "price_amount" | "stock_value"> | null) {
+ if (!item) return 0;
+ return Number(item.stock_value ?? (Number(item.stock_quantity || 0) * Number(item.price_amount || 0)));
+}
 
 const columns = [
  {
@@ -755,9 +848,17 @@ const columns = [
  },
  { title: "Qnt mínima", field: "min_stock", hozAlign: "center", minWidth: 110 },
  { title: "Qnt atual", field: "stock_quantity", hozAlign: "center", minWidth: 110 },
- { title: "Preço custo", field: "cost_amount", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) },
- { title: "Preço venda", field: "price_amount", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) }
+ { title: "Total custo", field: "stock_cost_value", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) },
+ { title: "Total venda", field: "stock_value", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) },
+ { title: "Compra atual", field: "cost_amount", hozAlign: "right", minWidth: 140, visible: false, formatter: (cell: any) => currency(cell.getValue()) },
+ { title: "Venda atual", field: "price_amount", hozAlign: "right", minWidth: 140, visible: false, formatter: (cell: any) => currency(cell.getValue()) }
 ];
+
+const inventoryPrintSummaryFields = [
+ { label: "Total por custo dos itens pesquisados", field: "stock_cost_value", format: "currency" as const },
+ { label: "Total por venda dos itens pesquisados", field: "stock_value", format: "currency" as const }
+];
+
 const catalogCardFields = [
  {
  key: "sku",
@@ -775,14 +876,14 @@ const catalogCardFields = [
  value: (row: Record<string, unknown>) => String(row.min_stock || 0)
  },
  {
- key: "cost_amount",
- label: "Preço custo",
- value: (row: Record<string, unknown>) => currency(row.cost_amount)
+ key: "stock_cost_value",
+ label: "Total custo",
+ value: (row: Record<string, unknown>) => currency(row.stock_cost_value)
  },
  {
- key: "price_amount",
- label: "Preço venda",
- value: (row: Record<string, unknown>) => currency(row.price_amount)
+ key: "stock_value",
+ label: "Total venda",
+ value: (row: Record<string, unknown>) => currency(row.stock_value)
  },
  {
  key: "description",
@@ -937,8 +1038,15 @@ async function loadItems() {
  storeInventoryOnly: props.storeInventoryOnly || filters.onlyStoreInventory
  });
  items.value = response.data;
+ const nextMap = new Map(selectedRowsMap.value);
+ for (const item of response.data) {
+ const itemId = Number(item.id || 0);
+ if (itemId && nextMap.has(itemId)) {
+ nextMap.set(itemId, item);
+ }
+ }
+ selectedRowsMap.value = nextMap;
  await nextTick();
- clearSelection();
  } catch (error) {
  await notifyError(error);
  }
@@ -1060,7 +1168,24 @@ function openCreate() {
 }
 
 function handleSelectionChange(rows: Record<string, unknown>[]) {
- selectedRows.value = rows as CatalogItem[];
+ const nextMap = new Map(selectedRowsMap.value);
+ for (const item of rows as CatalogItem[]) {
+ const itemId = Number(item.id || 0);
+ if (!itemId) continue;
+ nextMap.set(itemId, item);
+ }
+ selectedRowsMap.value = nextMap;
+}
+
+function handleSelectionKeysChange(keys: Array<string | number>) {
+ selectedRowIds.value = keys.map((key) => Number(key)).filter(Boolean);
+ const nextMap = new Map(selectedRowsMap.value);
+ for (const itemId of Array.from(nextMap.keys())) {
+ if (!selectedRowIds.value.includes(itemId)) {
+ nextMap.delete(itemId);
+ }
+ }
+ selectedRowsMap.value = nextMap;
 }
 
 function selectAllItems() {
@@ -1068,7 +1193,8 @@ function selectAllItems() {
 }
 
 function clearSelection() {
- selectedRows.value = [];
+ selectedRowIds.value = [];
+ selectedRowsMap.value = new Map();
  catalogTable.value?.clearSelection?.();
 }
 
@@ -1133,6 +1259,71 @@ function closeRestock() {
  showRestock.value = false;
  restockTarget.value = null;
  resetRestockForm();
+}
+
+function canEditStockBatch(entry: CatalogStockBatch | null) {
+ if (!entry) return false;
+ const originalQuantity = Number(entry.quantity ?? 0);
+ const remainingQuantity = Number(entry.quantity_remaining ?? 0);
+ return originalQuantity > 0 && originalQuantity === remainingQuantity;
+}
+
+function openEditStockBatch(entry: CatalogStockBatch) {
+ lotEditTarget.value = entry;
+ lotEditForm.costAmount = Number(entry.unit_cost ?? 0);
+ lotEditForm.priceAmount = Number(entry.unit_price ?? 0);
+ lotEditForm.notes = entry.notes || "";
+ showLotEdit.value = true;
+}
+
+async function submitLotEdit() {
+ if (!lotEditTarget.value) {
+ return;
+ }
+ busyLotEdit.value = true;
+ try {
+ const response = await api.updateCatalogStockBatch(Number(lotEditTarget.value.id), {
+ costAmount: Number(lotEditForm.costAmount || 0),
+ priceAmount: Number(lotEditForm.priceAmount || 0),
+ notes: lotEditForm.notes
+ });
+ selectedItem.value = response.data;
+ if (restockTarget.value && Number(restockTarget.value.id) === Number(response.data.id)) {
+ restockTarget.value = response.data;
+ }
+ showLotEdit.value = false;
+ lotEditTarget.value = null;
+ await loadItems();
+ await notifySuccess("Lote atualizado", "Custo e venda deste lote foram atualizados sem alterar os demais lotes.");
+ } catch (error) {
+ await notifyError(error);
+ } finally {
+ busyLotEdit.value = false;
+ }
+}
+
+function stockBatchSourceLabel(sourceType: string) {
+ const source = String(sourceType || "").toUpperCase();
+ if (source === "REPLENISHMENT") return "Reposição";
+ if (source === "MANUAL_ADJUSTMENT_IN") return "Ajuste manual";
+ if (source === "IMPORT") return "Importação";
+ return source || "Sistema";
+}
+
+function latestReplenishmentId() {
+ return Number(selectedItem.value?.replenishment_history?.[0]?.id || 0);
+}
+
+function canRevertStockBatch(entry: CatalogStockBatch | null) {
+ return !!entry && String(entry.source_type || "").toUpperCase() === "REPLENISHMENT" && Number(entry.source_id || 0) === latestReplenishmentId();
+}
+
+async function revertStockBatchReplenishment(entry: CatalogStockBatch) {
+ const replenishment = selectedItem.value?.replenishment_history?.find((item) => Number(item.id) === Number(entry.source_id));
+ if (!replenishment) {
+ return;
+ }
+ await revertReplenishment(replenishment, canRevertStockBatch(entry) ? 0 : 1);
 }
 
 async function submitRestock() {
@@ -1385,4 +1576,3 @@ onMounted(async () => {
  await loadItems();
 });
 </script>
-

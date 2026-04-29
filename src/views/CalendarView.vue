@@ -1,6 +1,10 @@
 <template>
  <AppShell title="Calendário" subtitle="Agenda da loja.">
  <template #actions>
+ <button class="btn btn-outline-secondary rounded-pill" @click="showFullscreenCalendar = true">
+ <i class="fa-solid fa-expand me-2"></i>
+ Calendário fullscreen
+ </button>
  <FilterDrawer title="Filtros" @apply="loadCalendar" @clear="clearFilters">
  <div class="d-grid gap-3">
  <div>
@@ -62,7 +66,24 @@
  </div>
  </div>
 
- <TimelineCalendar title="Agenda" :entries="entries" @select="openTimeline" />
+ <TimelineCalendar
+ title="Agenda"
+ :entries="entries"
+ title-field="clientName"
+ subtitle-field="statusLabel"
+ compact
+ @select="openTimeline"
+ />
+ <ModalDialog v-model="showFullscreenCalendar" title="Calendário fullscreen" eyebrow="Agenda" size="full">
+ <TimelineCalendar
+ title="Agenda"
+ :entries="entries"
+ title-field="clientName"
+ subtitle-field="statusLabel"
+ compact
+ @select="openTimeline"
+ />
+ </ModalDialog>
  </AppShell>
 </template>
 
@@ -72,6 +93,7 @@ import { useRouter } from "vue-router";
 import AppShell from "../components/AppShell.vue";
 import FilterDrawer from "../components/FilterDrawer.vue";
 import MetricCard from "../components/MetricCard.vue";
+import ModalDialog from "../components/ModalDialog.vue";
 import TimelineCalendar from "../components/TimelineCalendar.vue";
 import { api } from "../services/api";
 import { notifyError } from "../services/ui";
@@ -81,6 +103,7 @@ import type { CalendarEntry, Filters } from "../services/types";
 const session = useSessionStore();
 const router = useRouter();
 const entries = ref<CalendarEntry[]>([]);
+const showFullscreenCalendar = ref(false);
 const filters = reactive<Filters>({
  search: "",
  orderStatus: "",

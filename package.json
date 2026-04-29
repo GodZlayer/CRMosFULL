@@ -20,6 +20,7 @@
         "catalog:cleanup-duplicates": "node --experimental-sqlite scripts/cleanup-catalog-duplicates.mjs",
         "catalog:archive-zero-stock-new": "node --experimental-sqlite scripts/archive-crm-only-new-zero-stock.mjs",
         "catalog:sync-caixa-stock": "node --experimental-sqlite scripts/sync-caixa-stock.mjs",
+        "catalog:migrate-stock-batches": "node --experimental-sqlite scripts/migrate-stock-batches.mjs",
         "finance:sync-caixa": "node --experimental-sqlite scripts/sync-caixa-finance.mjs",
         "pdv:clear-sales": "node --experimental-sqlite scripts/clear-pdv-sales.mjs",
         "tasks:sync-ods": "node --experimental-sqlite scripts/sync-tarefas-ods.mjs"

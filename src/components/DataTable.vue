@@ -212,6 +212,12 @@ interface CardBadge {
   tone?: string;
 }
 
+interface PrintSummaryField {
+  label: string;
+  field: string;
+  format?: "currency" | "number";
+}
+
 interface TableColumnLike {
   field?: string;
   title?: string;
@@ -247,6 +253,10 @@ const props = defineProps({
     type: String,
     default: "id"
   },
+  selectedRowKeys: {
+    type: Array as PropType<Array<string | number>>,
+    default: undefined
+  },
   cardTitle: {
     type: [String, Function] as PropType<string | ((row: Record<string, unknown>) => unknown)>,
     default: ""
@@ -266,25 +276,28 @@ const props = defineProps({
   cardActions: {
     type: Array as PropType<CardAction[]>,
     default: () => []
+  },
+  printSummaryFields: {
+    type: Array as PropType<PrintSummaryField[]>,
+    default: () => []
   }
 });
 
 const emit = defineEmits<{
   (event: "row-click", row: Record<string, unknown>): void;
   (event: "selection-change", rows: Record<string, unknown>[]): void;
+  (event: "selection-keys-change", keys: Array<string | number>): void;
 }>();
 
 const ui = useUiStore();
 const tableTarget = ref<HTMLElement | null>(null);
-const selectedCardKeys = ref<Array<string | number>>([]);
+const selectedRowKeys = ref<Array<string | number>>([]);
 const pageSizeOptions = [8, 16, 24, 50, 100];
 const baseHeightOptions = ["420px", "640px", "860px", "1100px", "auto"];
 const autoColumnLabelMap: Record<string, string> = {
   active: "Ativo",
   active_orders_count: "OS ativas",
   approval_status: "Aprovacao",
-  average_cost_amount: "Media compra",
-  average_price_amount: "Media venda",
   brand: "Marca",
   category: "Categoria",
   client_name: "Cliente",
@@ -324,6 +337,7 @@ const autoColumnLabelMap: Record<string, string> = {
   source_workbook: "Arquivo origem",
   stock_health: "Saude estoque",
   stock_health_label: "Situacao",
+  stock_cost_value: "Valor custo estoque",
   stock_quantity: "Estoque",
   stock_value: "Valor em estoque",
   store_name: "Loja",
@@ -341,6 +355,7 @@ let printPrepared = false;
 let scheduledRenderId = 0;
 let isComponentUnmounted = false;
 let hasCustomVisibleColumns = false;
+let isSyncingSelection = false;
 
 const pageSize = ref(resolveInitialPageSize());
 const tableHeight = ref(resolveInitialTableHeight());
@@ -543,8 +558,27 @@ function searchableValue(value: unknown) {
   return normalizeSearchText(String(value));
 }
 
+function areKeyArraysEqual(left: Array<string | number>, right: Array<string | number>) {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((value, index) => value === right[index]);
+}
+
 function rowMatchesQuickSearch(row: Record<string, unknown>, search: string) {
   return searchableColumns.value.some((field) => searchableValue(row[field]).includes(search));
+}
+
+function applyTableQuickFilter() {
+  if (isCardMode.value || !tableInstance) {
+    return;
+  }
+  const normalizedSearch = normalizeSearchText(quickSearch.value);
+  if (!normalizedSearch) {
+    tableInstance.clearFilter?.(true);
+    return;
+  }
+  tableInstance.setFilter?.((row: Record<string, unknown>) => rowMatchesQuickSearch(row, normalizedSearch));
 }
 
 function resolveInitialPageSize() {
@@ -664,15 +698,48 @@ function toggleColumnVisibility(field: string) {
 }
 
 function emitSelectionChange() {
-  if (isCardMode.value) {
-    emit(
-      "selection-change",
-      props.rows.filter((row) => selectedCardKeys.value.includes(resolveRowKey(row)))
-    );
+  emit("selection-keys-change", [...selectedRowKeys.value]);
+  emit(
+    "selection-change",
+    props.rows.filter((row) => selectedRowKeys.value.includes(resolveRowKey(row)))
+  );
+}
+
+function syncTableSelectionFromKeys() {
+  if (isCardMode.value || !props.selectableRows || !tableInstance) {
     return;
   }
+  isSyncingSelection = true;
+  const rows = tableInstance.getRows?.() ?? [];
+  rows.forEach((row: any) => {
+    const key = resolveRowKey(row.getData());
+    const isSelected = row.isSelected?.() ?? false;
+    const shouldBeSelected = selectedRowKeys.value.includes(key);
+    if (shouldBeSelected && !isSelected) {
+      row.select?.();
+    }
+    if (!shouldBeSelected && isSelected) {
+      row.deselect?.();
+    }
+  });
+  queueMicrotask(() => {
+    isSyncingSelection = false;
+  });
+}
 
-  emit("selection-change", tableInstance?.getSelectedData?.() ?? []);
+function handleTableSelectionChanged() {
+  if (isSyncingSelection) {
+    return;
+  }
+  const visibleKeys = new Set(filteredRows.value.map((row) => resolveRowKey(row)));
+  const selectedVisibleKeys = new Set(
+    (tableInstance?.getSelectedData?.() ?? []).map((row: Record<string, unknown>) => resolveRowKey(row))
+  );
+  selectedRowKeys.value = [
+    ...selectedRowKeys.value.filter((key) => !visibleKeys.has(key)),
+    ...filteredRows.value.map((row) => resolveRowKey(row)).filter((key) => selectedVisibleKeys.has(key))
+  ];
+  emitSelectionChange();
 }
 
 function cellTooltip(_: MouseEvent, cell: any) {
@@ -721,7 +788,7 @@ function humanizeFieldLabel(field: string) {
 }
 
 function isCurrencyField(field: string) {
-  return /(^|_)(amount|value|margin)$/.test(field) || ["price_amount", "cost_amount", "stock_value", "unit_margin"].includes(field);
+  return /(^|_)(amount|value|margin)$/.test(field) || ["price_amount", "cost_amount", "stock_cost_value", "stock_value", "unit_margin"].includes(field);
 }
 
 function isPercentField(field: string) {
@@ -900,11 +967,11 @@ function renderTable(forceRecreate = false) {
       layout: props.layout ?? (ui.isMobileShell ? "fitColumns" : "fitDataStretch"),
       responsiveLayout: ui.isMobileShell ? "collapse" : false,
       selectableRows: props.selectableRows || false,
-      selectableRowsPersistence: false,
+      selectableRowsPersistence: true,
       pagination: true,
       paginationSize: pageSize.value,
       height: currentTabulatorHeight(),
-      data: filteredRows.value,
+      data: props.rows,
       columnDefaults: {
         vertAlign: "middle",
         headerWordWrap: true,
@@ -926,14 +993,18 @@ function renderTable(forceRecreate = false) {
     });
 
     if (props.selectableRows) {
-      tableInstance.on?.("rowSelectionChanged", emitSelectionChange);
+      tableInstance.on?.("rowSelectionChanged", handleTableSelectionChanged);
     }
+    applyTableQuickFilter();
+    syncTableSelectionFromKeys();
     return;
   }
 
   tableInstance.setColumns(buildColumns());
   tableInstance.setPageSize?.(pageSize.value);
-  tableInstance.replaceData(filteredRows.value);
+  tableInstance.replaceData(props.rows);
+  applyTableQuickFilter();
+  syncTableSelectionFromKeys();
   if (shouldResetPagination) {
     tableInstance.setPage?.(1);
   }
@@ -974,9 +1045,39 @@ function printColumnValue(row: Record<string, unknown>, column: TableColumnLike)
   return formatAutoColumnValue(field, row[field]);
 }
 
+function sumPrintSummaryField(rows: Record<string, unknown>[], field: string) {
+  return rows.reduce((sum, row) => {
+    const value = Number(row[field] ?? 0);
+    return Number.isFinite(value) ? sum + value : sum;
+  }, 0);
+}
+
+function formatPrintSummaryValue(value: number, format: PrintSummaryField["format"] = "number") {
+  if (format === "currency") {
+    return formatCurrencyValue(value);
+  }
+  return new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 2 }).format(value);
+}
+
+function buildPrintSummaryHtml(rows: Record<string, unknown>[]) {
+  if (!props.printSummaryFields.length) {
+    return "";
+  }
+
+  const cards = props.printSummaryFields
+    .map((field) => {
+      const total = sumPrintSummaryField(rows, field.field);
+      return `<div class="print-summary__card"><div class="print-summary__label">${escapeHtml(field.label)}</div><div class="print-summary__value">${escapeHtml(formatPrintSummaryValue(total, field.format))}</div></div>`;
+    })
+    .join("");
+
+  return `<section class="print-summary">${cards}</section>`;
+}
+
 function buildPrintTableHtml() {
   const exportColumns = fallbackColumns.value;
   const rows = filteredRows.value;
+  const summary = buildPrintSummaryHtml(rows);
   const head = exportColumns
     .map((column) => `<th>${escapeHtml(column.title || column.field || "Coluna")}</th>`)
     .join("");
@@ -1003,6 +1104,10 @@ function buildPrintTableHtml() {
     ".print-head__eyebrow { font-size: 12px; text-transform: uppercase; color: #666; margin-bottom: 6px; }",
     ".print-head__title { font-size: 22px; font-weight: 700; margin: 0 0 4px; }",
     ".print-head__meta { font-size: 12px; color: #666; }",
+    ".print-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 0 0 16px; }",
+    ".print-summary__card { border: 1px solid #d0d7de; border-radius: 10px; padding: 10px 12px; background: #fafafa; }",
+    ".print-summary__label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }",
+    ".print-summary__value { font-size: 18px; font-weight: 800; color: #111; }",
     "table { width: 100%; border-collapse: collapse; table-layout: auto; }",
     "th, td { border: 1px solid #d0d7de; padding: 8px 10px; text-align: left; vertical-align: top; font-size: 12px; }",
     "th { background: #f3f4f6; font-weight: 700; }",
@@ -1012,6 +1117,7 @@ function buildPrintTableHtml() {
     "</head>",
     "<body>",
     `<div class="print-head"><div class="print-head__eyebrow">${escapeHtml(props.eyebrow)}</div><h1 class="print-head__title">${escapeHtml(props.title)}</h1><div class="print-head__meta">${escapeHtml(`Total listado: ${rows.length}`)}</div></div>`,
+    summary,
     `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`,
     "</body>",
     "</html>"
@@ -1035,34 +1141,36 @@ function printTable() {
 
 function selectAllRows() {
   if (isCardMode.value) {
-    selectedCardKeys.value = props.rows.map((row) => resolveRowKey(row));
+    selectedRowKeys.value = props.rows.map((row) => resolveRowKey(row));
     emitSelectionChange();
     return;
   }
-  tableInstance?.selectRow();
-  queueMicrotask(emitSelectionChange);
+  selectedRowKeys.value = Array.from(new Set([
+    ...selectedRowKeys.value,
+    ...filteredRows.value.map((row) => resolveRowKey(row))
+  ]));
+  syncTableSelectionFromKeys();
+  emitSelectionChange();
 }
 
 function clearSelection() {
-  if (isCardMode.value) {
-    selectedCardKeys.value = [];
-    emitSelectionChange();
-    return;
+  selectedRowKeys.value = [];
+  if (!isCardMode.value) {
+    syncTableSelectionFromKeys();
   }
-  tableInstance?.deselectRow();
-  queueMicrotask(emitSelectionChange);
+  emitSelectionChange();
 }
 
 function isRowSelected(row: Record<string, unknown>) {
-  return selectedCardKeys.value.includes(resolveRowKey(row));
+  return selectedRowKeys.value.includes(resolveRowKey(row));
 }
 
 function toggleCardSelection(row: Record<string, unknown>) {
   const key = resolveRowKey(row);
-  if (selectedCardKeys.value.includes(key)) {
-    selectedCardKeys.value = selectedCardKeys.value.filter((item) => item !== key);
+  if (selectedRowKeys.value.includes(key)) {
+    selectedRowKeys.value = selectedRowKeys.value.filter((item) => item !== key);
   } else {
-    selectedCardKeys.value = [...selectedCardKeys.value, key];
+    selectedRowKeys.value = [...selectedRowKeys.value, key];
   }
   emitSelectionChange();
 }
@@ -1183,9 +1291,7 @@ defineExpose({
   selectAllRows,
   clearSelection,
   getSelectedRows: () =>
-    isCardMode.value
-      ? props.rows.filter((row) => selectedCardKeys.value.includes(resolveRowKey(row)))
-      : tableInstance?.getSelectedData?.() ?? []
+    props.rows.filter((row) => selectedRowKeys.value.includes(resolveRowKey(row)))
 });
 
 onMounted(() => {
@@ -1225,12 +1331,28 @@ watch(
 watch(
   () => filteredRows.value,
   () => {
-    selectedCardKeys.value = selectedCardKeys.value.filter((key) =>
-      filteredRows.value.some((row) => resolveRowKey(row) === key)
-    );
-    void queueTableRender();
-    emitSelectionChange();
+    if (isCardMode.value) {
+      void queueTableRender();
+    } else {
+      applyTableQuickFilter();
+    }
   }
+);
+
+watch(
+  () => props.selectedRowKeys,
+  () => {
+    if (!Array.isArray(props.selectedRowKeys)) {
+      return;
+    }
+    const nextKeys = Array.from(new Set(props.selectedRowKeys));
+    if (areKeyArraysEqual(selectedRowKeys.value, nextKeys)) {
+      return;
+    }
+    selectedRowKeys.value = nextKeys;
+    void queueTableRender();
+  },
+  { immediate: true }
 );
 
 onBeforeUnmount(() => {

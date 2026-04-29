@@ -36,6 +36,8 @@
   ReportsPayload,
   RemoteLegacyImportResult,
   StoreCashAccount,
+  StoreCashTransferPayload,
+  StoreCashTransferResult,
   StoreContext,
   User
 } from "./types";
@@ -272,6 +274,18 @@ export const api = {
       method: "DELETE"
     });
   },
+  updateCatalogReplenishment(id: number, payload: { costAmount: number; priceAmount: number; notes?: string }) {
+    return request<{ data: CatalogItemDetail }>("/api/catalog/replenishments/" + id, {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    });
+  },
+  updateCatalogStockBatch(id: number, payload: { costAmount: number; priceAmount: number; notes?: string }) {
+    return request<{ data: CatalogItemDetail }>("/api/catalog/stock-batches/" + id, {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    });
+  },
   services(filters: Filters = {}) {
     return request<{ data: ServiceCatalogItem[] }>(`/api/services${toQuery(filters)}`);
   },
@@ -505,6 +519,12 @@ export const api = {
       body: JSON.stringify(payload)
     });
   },
+  transferStoreCash(payload: StoreCashTransferPayload) {
+    return request<{ data: StoreCashTransferResult }>("/api/store-cash/transfers", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  },
   cashSessions(filters: Filters = {}) {
     return request<{ data: CashSession[] }>(`/api/pdv/sessions${toQuery(filters)}`);
   },
@@ -567,6 +587,29 @@ export const api = {
       fileName: response.headers.get("Content-Disposition")?.match(/filename=\"?([^"]+)\"?/)?.[1] || "crm.mysql.sql"
     };
   },
+  async downloadOperationalOds(payload: Record<string, unknown> = {}) {
+    const response = await fetch("/api/system-transfer/export/ods", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      try {
+        const parsed = JSON.parse(text);
+        throw new Error(String(parsed.message || "Falha ao gerar exportacao ODS."));
+      } catch {
+        throw new Error(text || "Falha ao gerar exportacao ODS.");
+      }
+    }
+    return {
+      blob: await response.blob(),
+      fileName: response.headers.get("Content-Disposition")?.match(/filename=\"?([^"]+)\"?/)?.[1] || "exportacao.ods"
+    };
+  },
   importFromMysql(payload: Record<string, unknown>) {
     return request<{ data: MysqlImportResult }>("/api/system-transfer/import/mysql", {
       method: "POST",
@@ -586,9 +629,5 @@ export const api = {
     return request<{ data: LegacyImportSummary[] }>(`/api/legacy-import-rows/summary${toQuery(filters)}`);
   }
 };
-
-
-
-
 
 

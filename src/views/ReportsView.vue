@@ -119,6 +119,7 @@
      :columns="orderColumns"
      :allow-csv="true"
      :allow-print="true"
+     :print-summary-fields="orderPrintSummaryFields"
      responsive-mode="auto"
     />
    </div>
@@ -130,6 +131,7 @@
      :columns="pdvColumns"
      :allow-csv="true"
      :allow-print="true"
+     :print-summary-fields="pdvPrintSummaryFields"
      responsive-mode="auto"
     />
    </div>
@@ -141,6 +143,7 @@
      :columns="financeColumns"
      :allow-csv="true"
      :allow-print="true"
+     :print-summary-fields="financePrintSummaryFields"
      responsive-mode="auto"
     />
    </div>
@@ -152,6 +155,7 @@
      :columns="purchaseColumns"
      :allow-csv="true"
      :allow-print="true"
+     :print-summary-fields="purchasePrintSummaryFields"
      responsive-mode="auto"
     />
    </div>
@@ -163,6 +167,7 @@
      :columns="inventoryColumns"
      :allow-csv="true"
      :allow-print="true"
+     :print-summary-fields="inventoryPrintSummaryFields"
      responsive-mode="auto"
     />
    </div>
@@ -174,6 +179,7 @@
      :columns="performanceColumns"
      :allow-csv="true"
      :allow-print="true"
+     :print-summary-fields="performancePrintSummaryFields"
      responsive-mode="auto"
     />
    </div>
@@ -202,6 +208,12 @@
        <td>{{ currency(order.total_amount) }}</td>
       </tr>
      </tbody>
+     <tfoot>
+      <tr class="fw-bold">
+       <td colspan="4">Total da impressão</td>
+       <td>{{ currency(totalRowsAmount(payload?.orders || [], "total_amount")) }}</td>
+      </tr>
+     </tfoot>
     </table>
    </div>
 
@@ -227,6 +239,12 @@
        <td>{{ currency(sale.total_amount) }}</td>
       </tr>
      </tbody>
+     <tfoot>
+      <tr class="fw-bold">
+       <td colspan="5">Total da impressão</td>
+       <td>{{ currency(totalRowsAmount(payload?.pdvSales || [], "total_amount")) }}</td>
+      </tr>
+     </tfoot>
     </table>
    </div>
 
@@ -264,6 +282,12 @@
        <td>{{ currency(entry.amount) }}</td>
       </tr>
      </tbody>
+     <tfoot>
+      <tr class="fw-bold">
+       <td colspan="5">Total da impressão</td>
+       <td>{{ currency(totalRowsAmount(payload?.finance || [], "amount")) }}</td>
+      </tr>
+     </tfoot>
     </table>
    </div>
 
@@ -301,6 +325,12 @@
        <td>{{ currency(entry.amount) }}</td>
       </tr>
      </tbody>
+     <tfoot>
+      <tr class="fw-bold">
+       <td colspan="5">Total da impressão</td>
+       <td>{{ currency(totalRowsAmount(payload?.purchases || [], "amount")) }}</td>
+      </tr>
+     </tfoot>
     </table>
    </div>
 
@@ -324,6 +354,15 @@
        <td>{{ item.pdvSales }}</td>
       </tr>
      </tbody>
+     <tfoot>
+      <tr class="fw-bold">
+       <td>Total da impressão</td>
+       <td>{{ totalRowsAmount(payload?.performance || [], "totalActions") }}</td>
+       <td>{{ totalRowsAmount(payload?.performance || [], "ordersCreated") }}</td>
+       <td>{{ totalRowsAmount(payload?.performance || [], "ordersClosed") }}</td>
+       <td>{{ totalRowsAmount(payload?.performance || [], "pdvSales") }}</td>
+      </tr>
+     </tfoot>
     </table>
    </div>
   </div>
@@ -557,8 +596,6 @@ const inventoryColumns = [
  { title: "Resp. reposicao", field: "last_replenishment_actor", visible: false },
  { title: "Obs. reposicao", field: "last_replenishment_notes", visible: false, minWidth: 220 },
  { title: "Total reposicoes", field: "replenishment_count", visible: false },
- { title: "Media compra", field: "average_cost_amount", visible: false, formatter: (cell: any) => currency(cell.getValue()) },
- { title: "Media venda", field: "average_price_amount", visible: false, formatter: (cell: any) => currency(cell.getValue()) },
  { title: "Ult. compra ant.", field: "last_previous_cost_amount", visible: false, formatter: (cell: any) => currency(cell.getValue()) },
  { title: "Ult. venda ant.", field: "last_previous_price_amount", visible: false, formatter: (cell: any) => currency(cell.getValue()) },
  { title: "OS vinculadas", field: "linked_orders_count", visible: false },
@@ -576,6 +613,43 @@ const performanceColumns = [
  { title: "Fechamentos", field: "ordersClosed", hozAlign: "center" },
  { title: "PDV", field: "pdvSales", hozAlign: "center" }
 ];
+
+const orderPrintSummaryFields = [
+ { label: "Total das OS impressas", field: "total_amount", format: "currency" as const }
+];
+
+const pdvPrintSummaryFields = [
+ { label: "Subtotal impresso", field: "subtotal_amount", format: "currency" as const },
+ { label: "Desconto impresso", field: "discount_amount", format: "currency" as const },
+ { label: "Total PDV impresso", field: "total_amount", format: "currency" as const }
+];
+
+const financePrintSummaryFields = [
+ { label: "Total financeiro impresso", field: "amount", format: "currency" as const }
+];
+
+const purchasePrintSummaryFields = [
+ { label: "Total de compras/reposições impresso", field: "amount", format: "currency" as const }
+];
+
+const inventoryPrintSummaryFields = [
+ { label: "Unidades impressas", field: "stock_quantity", format: "number" as const },
+ { label: "Valor de estoque impresso", field: "stock_value", format: "currency" as const }
+];
+
+const performancePrintSummaryFields = [
+ { label: "Ações impressas", field: "totalActions", format: "number" as const },
+ { label: "OS criadas impressas", field: "ordersCreated", format: "number" as const },
+ { label: "Fechamentos impressos", field: "ordersClosed", format: "number" as const },
+ { label: "PDV impressos", field: "pdvSales", format: "number" as const }
+];
+
+function totalRowsAmount(rows: any[], field: string) {
+ return rows.reduce((sum, row) => {
+  const value = Number(row?.[field] || 0);
+  return Number.isFinite(value) ? sum + value : sum;
+ }, 0);
+}
 
 function hydrateFromQuery() {
  filters.search = String(route.query.search || "");

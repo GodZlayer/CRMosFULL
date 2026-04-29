@@ -93,6 +93,66 @@ test("repository returns catalog detail with OS usage history", () => {
   repository.close();
 });
 
+test("repository preserves older unit costs after replenishment and consumes stock by layers", () => {
+  const repository = createRepository({ dbPath: ":memory:", seedDemo: true });
+  const client = repository.listClients({})[0];
+  const created = repository.saveCatalogItem({
+    sku: "LAYER-01",
+    name: "Item custo em camadas",
+    category: "Acessórios",
+    itemCondition: "NOVA",
+    stockQuantity: 2,
+    minStock: 0,
+    costAmount: 10,
+    priceAmount: 50,
+    active: true
+  });
+
+  repository.replenishCatalogItem(created.id, {
+    quantity: 2,
+    costAmount: 20,
+    priceAmount: 50
+  });
+
+  const afterReplenishment = repository.getCatalogItem(created.id);
+  assert.equal(Number(afterReplenishment.stock_quantity || 0), 4);
+  assert.equal(Number(afterReplenishment.stock_cost_value || 0), 60);
+  assert.equal(Number(afterReplenishment.cost_amount || 0), 20);
+
+  const order = repository.saveOrder({
+    clientId: client.id,
+    phoneSnapshot: client.phone,
+    equipment: "Notebook Teste Camadas",
+    defect: "Teste",
+    extras: "",
+    technicianName: "QA",
+    dueDate: "2026-03-09",
+    orderStatus: "ABERTA",
+    approvalStatus: "APROVADA",
+    quoteAmount: 150,
+    actualAmount: 150,
+    serviceAmount: 0,
+    discountAmount: 0,
+    paymentMethod: "PIX",
+    items: [
+      {
+        catalogItemId: created.id,
+        quantity: 3,
+        unitCost: 0,
+        unitPrice: 50
+      }
+    ]
+  });
+
+  assert.equal(Number(order.items[0].unit_cost || 0), Number((40 / 3).toFixed(6)));
+
+  const afterConsumption = repository.getCatalogItem(created.id);
+  assert.equal(Number(afterConsumption.stock_quantity || 0), 1);
+  assert.equal(Number(afterConsumption.stock_cost_value || 0), 20);
+  assert.equal(Number(afterConsumption.cost_amount || 0), 20);
+  repository.close();
+});
+
 test("repository deletes unused catalog items and protects items linked to OS", () => {
   const repository = createRepository({ dbPath: ":memory:", seedDemo: true });
   const usedCatalog = repository.listCatalogItems({}).find((item) => Number(item.linked_orders_count) > 0);

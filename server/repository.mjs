@@ -24,6 +24,7 @@ import {
   formatOrderCode,
   getLocalDateParts,
   getLocalDateString,
+  isExpiredTimestamp,
   isBetweenDates,
   matchesSearch,
   normalizeOrderInput,
@@ -98,6 +99,7 @@ export function createRepository(options = {}) {
     db,
     initSchema,
     seedDemo,
+    syncCatalogStockBatches,
     getMeta,
     authenticateUser,
     createSession,
@@ -114,6 +116,10 @@ export function createRepository(options = {}) {
     replenishCatalogItem,
     replenishCatalogBatch,
     revertCatalogReplenishment,
+    updateCatalogReplenishment,
+    updateCatalogStockBatch,
+    consumeCatalogStock,
+    restoreCatalogStockForSource,
     deleteCatalogItems,
     listServices,
     getService,
@@ -141,6 +147,7 @@ export function createRepository(options = {}) {
   if (options.seedDemo !== false) {
     seedDemo();
   }
+  syncCatalogStockBatches();
 
   return repo;
 
@@ -446,6 +453,34 @@ export function createRepository(options = {}) {
         FOREIGN KEY (catalog_item_id) REFERENCES catalog_items(id) ON DELETE CASCADE,
         FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL
       );
+
+      CREATE TABLE IF NOT EXISTS catalog_stock_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        catalog_item_id INTEGER NOT NULL,
+        source_type TEXT NOT NULL DEFAULT 'MANUAL',
+        source_id INTEGER DEFAULT NULL,
+        quantity INTEGER NOT NULL DEFAULT 0,
+        quantity_remaining INTEGER NOT NULL DEFAULT 0,
+        unit_cost REAL NOT NULL DEFAULT 0,
+        unit_price REAL NOT NULL DEFAULT 0,
+        notes TEXT DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (catalog_item_id) REFERENCES catalog_items(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS catalog_stock_consumptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        catalog_item_id INTEGER NOT NULL,
+        batch_id INTEGER NOT NULL,
+        source_type TEXT NOT NULL,
+        source_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL DEFAULT 0,
+        unit_cost REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (catalog_item_id) REFERENCES catalog_items(id) ON DELETE CASCADE,
+        FOREIGN KEY (batch_id) REFERENCES catalog_stock_batches(id) ON DELETE CASCADE
+      );
     `);
     addColumnIfMissing('clients', 'photo_path', "TEXT DEFAULT ''");
     addColumnIfMissing('catalog_items', 'description', "TEXT DEFAULT ''");
@@ -468,6 +503,7 @@ export function createRepository(options = {}) {
     addColumnIfMissing('stock_replenishments', 'raw_payload', "TEXT DEFAULT ''");
     addColumnIfMissing('stock_replenishments', 'finance_entry_id', 'INTEGER DEFAULT NULL');
     addColumnIfMissing('stock_replenishments', 'extra_finance_entry_id', 'INTEGER DEFAULT NULL');
+    addColumnIfMissing('catalog_stock_batches', 'notes', "TEXT DEFAULT ''");
     addColumnIfMissing('service_catalog', 'allow_custom_price', 'INTEGER NOT NULL DEFAULT 0');
     addColumnIfMissing('service_catalog', 'pricing_mode', "TEXT NOT NULL DEFAULT 'FIXED'");
     addColumnIfMissing('service_catalog', 'additional_price_amount', 'REAL NOT NULL DEFAULT 0');
@@ -529,6 +565,407 @@ export function createRepository(options = {}) {
         );
       });
     }
+  }
+
+  function roundCurrency(value, digits = 6) {
+    return Number(Number(value || 0).toFixed(digits));
+  }
+
+  function safeParseJson(value, fallback = {}) {
+    if (!value || typeof value !== "string") {
+      return fallback;
+    }
+    try {
+      return JSON.parse(value);
+    } catch {
+      return fallback;
+    }
+  }
+
+  function createStockReplenishmentRecord({
+    catalogItemId,
+    quantity,
+    newCostAmount,
+    newPriceAmount,
+    previousCostAmount = null,
+    previousPriceAmount = null,
+    notes = "",
+    actorUserId = null,
+    actorName = "Sistema",
+    createdAt = nowIso(),
+    financeEntryId = null,
+    extraFinanceEntryId = null,
+    rawPayload = ""
+  }) {
+    const normalizedQuantity = Math.max(0, Number.parseInt(String(quantity ?? 0), 10) || 0);
+    if (normalizedQuantity <= 0) {
+      return null;
+    }
+    const timestamp = normalizeText(createdAt, nowIso()) || nowIso();
+    const result = run(
+      `
+        INSERT INTO stock_replenishments (
+          catalog_item_id, quantity, new_cost_amount, new_price_amount, previous_cost_amount,
+          previous_price_amount, notes, actor_user_id, actor_name, created_at, finance_entry_id,
+          extra_finance_entry_id, raw_payload
+        )
+        VALUES (
+          :catalogItemId, :quantity, :newCostAmount, :newPriceAmount, :previousCostAmount,
+          :previousPriceAmount, :notes, :actorUserId, :actorName, :createdAt, :financeEntryId,
+          :extraFinanceEntryId, :rawPayload
+        )
+      `,
+      {
+        catalogItemId: Number(catalogItemId),
+        quantity: normalizedQuantity,
+        newCostAmount: toNumber(newCostAmount) ?? 0,
+        newPriceAmount: toNumber(newPriceAmount) ?? 0,
+        previousCostAmount: previousCostAmount === null || previousCostAmount === undefined ? null : Number(previousCostAmount),
+        previousPriceAmount: previousPriceAmount === null || previousPriceAmount === undefined ? null : Number(previousPriceAmount),
+        notes: normalizeText(notes),
+        actorUserId: actorUserId === null || actorUserId === undefined ? null : Number(actorUserId),
+        actorName: normalizeText(actorName, "Sistema") || "Sistema",
+        createdAt: timestamp,
+        financeEntryId: financeEntryId === null || financeEntryId === undefined ? null : Number(financeEntryId),
+        extraFinanceEntryId: extraFinanceEntryId === null || extraFinanceEntryId === undefined ? null : Number(extraFinanceEntryId),
+        rawPayload: typeof rawPayload === "string" ? rawPayload : JSON.stringify(rawPayload || {})
+      }
+    );
+    return Number(result.lastInsertRowid || 0) || null;
+  }
+
+  function createStockBatch({
+    catalogItemId,
+    quantity,
+    unitCost,
+    unitPrice,
+    sourceType = "MANUAL",
+    sourceId = null,
+    notes = "",
+    createdAt = nowIso()
+  }) {
+    const normalizedQuantity = Math.max(0, Number.parseInt(String(quantity ?? 0), 10) || 0);
+    if (normalizedQuantity <= 0) {
+      return null;
+    }
+    const timestamp = normalizeText(createdAt, nowIso()) || nowIso();
+    const result = run(
+      `
+        INSERT INTO catalog_stock_batches (
+          catalog_item_id, source_type, source_id, quantity, quantity_remaining,
+          unit_cost, unit_price, notes, created_at, updated_at
+        )
+        VALUES (
+          :catalogItemId, :sourceType, :sourceId, :quantity, :quantityRemaining,
+          :unitCost, :unitPrice, :notes, :createdAt, :updatedAt
+        )
+      `,
+      {
+        catalogItemId: Number(catalogItemId),
+        sourceType: normalizeText(sourceType, "MANUAL") || "MANUAL",
+        sourceId: sourceId === null || sourceId === undefined ? null : Number(sourceId),
+        quantity: normalizedQuantity,
+        quantityRemaining: normalizedQuantity,
+        unitCost: toNumber(unitCost) ?? 0,
+        unitPrice: toNumber(unitPrice) ?? 0,
+        notes: normalizeText(notes),
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }
+    );
+    return Number(result.lastInsertRowid || 0) || null;
+  }
+
+  function refreshCatalogItemStockState(catalogItemId, options = {}) {
+    const current = get("SELECT * FROM catalog_items WHERE id = :id", { id: Number(catalogItemId) });
+    if (!current) {
+      return null;
+    }
+    const summary = get(
+      `
+        SELECT
+          COALESCE(SUM(quantity_remaining), 0) AS stock_quantity,
+          COALESCE(SUM(quantity_remaining * unit_cost), 0) AS stock_cost_value
+        FROM catalog_stock_batches
+        WHERE catalog_item_id = :catalogItemId
+      `,
+      { catalogItemId: Number(catalogItemId) }
+    ) || { stock_quantity: 0, stock_cost_value: 0 };
+    const stockQuantity = Number(summary.stock_quantity || 0);
+    const costAmount = options.overrideCostAmount !== undefined
+      ? Number(options.overrideCostAmount || 0)
+      : Number(current.cost_amount || 0);
+    const priceAmount = options.overridePriceAmount !== undefined
+      ? Number(options.overridePriceAmount || 0)
+      : Number(current.price_amount || 0);
+    run(
+      `
+        UPDATE catalog_items
+        SET stock_quantity = :stockQuantity,
+            cost_amount = :costAmount,
+            price_amount = :priceAmount,
+            updated_at = :updatedAt
+        WHERE id = :id
+      `,
+      {
+        id: Number(catalogItemId),
+        stockQuantity,
+        costAmount,
+        priceAmount,
+        updatedAt: nowIso()
+      }
+    );
+    return get("SELECT * FROM catalog_items WHERE id = :id", { id: Number(catalogItemId) });
+  }
+
+  function syncCatalogStockBatches() {
+    const financeEntries = all(
+      `
+        SELECT id, amount, created_at, raw_payload
+        FROM finance_entries
+        WHERE category = 'Compra de produto'
+        ORDER BY created_at ASC, id ASC
+      `
+    ).map((entry) => ({
+      ...entry,
+      payload: safeParseJson(entry.raw_payload, null)
+    }));
+    const items = all(
+      `
+        SELECT id, stock_quantity, cost_amount, price_amount, created_at, updated_at
+        FROM catalog_items
+        WHERE COALESCE(deleted_at, '') = ''
+        ORDER BY id ASC
+      `
+    );
+    for (const item of items) {
+      const batchCount = Number(
+        get("SELECT COUNT(*) AS total FROM catalog_stock_batches WHERE catalog_item_id = :catalogItemId", {
+          catalogItemId: Number(item.id)
+        })?.total || 0
+      );
+      const replenishmentCount = Number(
+        get("SELECT COUNT(*) AS total FROM stock_replenishments WHERE catalog_item_id = :catalogItemId", {
+          catalogItemId: Number(item.id)
+        })?.total || 0
+      );
+      const matchingInitialFinanceEntry = financeEntries.find((entry) => {
+        const payload = entry.payload;
+        if (!payload || String(payload.source || "").trim() !== "CATALOG_INITIAL_STOCK") {
+          return false;
+        }
+        if (Number(payload.catalogItemId || payload.catalog_item_id || 0) !== Number(item.id)) {
+          return false;
+        }
+        return Number(payload.stockQuantity || payload.stock_quantity || 0) === Number(item.stock_quantity || 0)
+          && roundCurrency(payload.unitCost) === roundCurrency(item.cost_amount);
+      }) || null;
+      if (batchCount === 0 && Number(item.stock_quantity || 0) > 0) {
+        let replenishmentId = null;
+        if (replenishmentCount === 0) {
+          replenishmentId = createStockReplenishmentRecord({
+            catalogItemId: Number(item.id),
+            quantity: Number(item.stock_quantity || 0),
+            newCostAmount: Number(item.cost_amount || 0),
+            newPriceAmount: Number(item.price_amount || 0),
+            previousCostAmount: null,
+            previousPriceAmount: null,
+            notes: "Migracao do saldo atual para lotes",
+            actorName: "Migracao",
+            createdAt: normalizeText(item.updated_at, item.created_at || nowIso()) || nowIso(),
+            financeEntryId: matchingInitialFinanceEntry?.id || null,
+            rawPayload: matchingInitialFinanceEntry?.raw_payload || JSON.stringify({
+              source: "CATALOG_STOCK_BATCH_MIGRATION",
+              catalogItemId: Number(item.id),
+              stockQuantity: Number(item.stock_quantity || 0),
+              unitCost: Number(item.cost_amount || 0)
+            })
+          });
+        } else {
+          replenishmentId = Number(
+            get(
+              `
+                SELECT id
+                FROM stock_replenishments
+                WHERE catalog_item_id = :catalogItemId
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+              `,
+              { catalogItemId: Number(item.id) }
+            )?.id || 0
+          ) || null;
+        }
+        createStockBatch({
+          catalogItemId: Number(item.id),
+          quantity: Number(item.stock_quantity || 0),
+          unitCost: Number(item.cost_amount || 0),
+          unitPrice: Number(item.price_amount || 0),
+          sourceType: "REPLENISHMENT",
+          sourceId: replenishmentId || Number(item.id),
+          notes: "Migracao do saldo atual para lotes",
+          createdAt: normalizeText(item.updated_at, item.created_at || nowIso()) || nowIso()
+        });
+      }
+      if (matchingInitialFinanceEntry?.id && replenishmentCount > 0) {
+        run(
+          `
+            UPDATE stock_replenishments
+            SET finance_entry_id = COALESCE(finance_entry_id, :financeEntryId)
+            WHERE catalog_item_id = :catalogItemId
+              AND finance_entry_id IS NULL
+          `,
+          {
+            financeEntryId: Number(matchingInitialFinanceEntry.id),
+            catalogItemId: Number(item.id)
+          }
+        );
+      }
+      refreshCatalogItemStockState(Number(item.id));
+    }
+  }
+
+  function consumeCatalogStock(catalogItemId, quantity, context = {}) {
+    const normalizedQuantity = Math.max(0, Number.parseInt(String(quantity ?? 0), 10) || 0);
+    if (normalizedQuantity <= 0) {
+      return { quantity: 0, totalCost: 0, unitCost: 0, allocations: [] };
+    }
+    const sourceType = normalizeText(context.sourceType || context.source_type, "MANUAL_CONSUMPTION") || "MANUAL_CONSUMPTION";
+    const sourceId = Number(context.sourceId ?? context.source_id ?? 0);
+    if (!sourceId) {
+      throw new Error("Fonte de consumo de estoque invalida.");
+    }
+    const current = get("SELECT id, name, stock_quantity FROM catalog_items WHERE id = :id", { id: Number(catalogItemId) });
+    if (!current) {
+      throw new Error("Item de catalogo nao encontrado para baixa de estoque.");
+    }
+    if (Number(current.stock_quantity || 0) < normalizedQuantity) {
+      throw new Error(`Estoque insuficiente para ${current.name}.`);
+    }
+    const batches = all(
+      `
+        SELECT *
+        FROM catalog_stock_batches
+        WHERE catalog_item_id = :catalogItemId
+          AND quantity_remaining > 0
+        ORDER BY created_at ASC, id ASC
+      `,
+      { catalogItemId: Number(catalogItemId) }
+    );
+    let remaining = normalizedQuantity;
+    let totalCost = 0;
+    const allocations = [];
+    for (const batch of batches) {
+      if (remaining <= 0) {
+        break;
+      }
+      const available = Number(batch.quantity_remaining || 0);
+      if (available <= 0) {
+        continue;
+      }
+      const consumedQuantity = Math.min(available, remaining);
+      run(
+        `
+          UPDATE catalog_stock_batches
+          SET quantity_remaining = quantity_remaining - :quantity,
+              updated_at = :updatedAt
+          WHERE id = :id
+        `,
+        {
+          id: Number(batch.id),
+          quantity: consumedQuantity,
+          updatedAt: nowIso()
+        }
+      );
+      run(
+        `
+          INSERT INTO catalog_stock_consumptions (
+            catalog_item_id, batch_id, source_type, source_id, quantity, unit_cost, created_at
+          )
+          VALUES (
+            :catalogItemId, :batchId, :sourceType, :sourceId, :quantity, :unitCost, :createdAt
+          )
+        `,
+        {
+          catalogItemId: Number(catalogItemId),
+          batchId: Number(batch.id),
+          sourceType,
+          sourceId,
+          quantity: consumedQuantity,
+          unitCost: Number(batch.unit_cost || 0),
+          createdAt: nowIso()
+        }
+      );
+      totalCost += consumedQuantity * Number(batch.unit_cost || 0);
+      allocations.push({
+        batchId: Number(batch.id),
+        quantity: consumedQuantity,
+        unitCost: Number(batch.unit_cost || 0)
+      });
+      remaining -= consumedQuantity;
+    }
+    if (remaining > 0) {
+      throw new Error(`Estoque insuficiente para ${current.name}.`);
+    }
+    refreshCatalogItemStockState(Number(catalogItemId));
+    return {
+      quantity: normalizedQuantity,
+      totalCost: roundCurrency(totalCost, 2),
+      unitCost: normalizedQuantity > 0 ? roundCurrency(totalCost / normalizedQuantity) : 0,
+      allocations
+    };
+  }
+
+  function restoreCatalogStockForSource(sourceType, sourceId) {
+    const normalizedSourceType = normalizeText(sourceType) || "";
+    const normalizedSourceId = Number(sourceId || 0);
+    if (!normalizedSourceType || !normalizedSourceId) {
+      return [];
+    }
+    const allocations = all(
+      `
+        SELECT *
+        FROM catalog_stock_consumptions
+        WHERE source_type = :sourceType
+          AND source_id = :sourceId
+        ORDER BY id DESC
+      `,
+      {
+        sourceType: normalizedSourceType,
+        sourceId: normalizedSourceId
+      }
+    );
+    if (!allocations.length) {
+      return [];
+    }
+    const touchedIds = new Set();
+    for (const allocation of allocations) {
+      run(
+        `
+          UPDATE catalog_stock_batches
+          SET quantity_remaining = quantity_remaining + :quantity,
+              updated_at = :updatedAt
+          WHERE id = :id
+        `,
+        {
+          id: Number(allocation.batch_id),
+          quantity: Number(allocation.quantity || 0),
+          updatedAt: nowIso()
+        }
+      );
+      touchedIds.add(Number(allocation.catalog_item_id));
+    }
+    run(
+      `
+        DELETE FROM catalog_stock_consumptions
+        WHERE source_type = :sourceType
+          AND source_id = :sourceId
+      `,
+      {
+        sourceType: normalizedSourceType,
+        sourceId: normalizedSourceId
+      }
+    );
+    return [...touchedIds].map((catalogItemId) => refreshCatalogItemStockState(Number(catalogItemId))).filter(Boolean);
   }
 
   function seedDemo() {
@@ -964,7 +1401,7 @@ export function createRepository(options = {}) {
   function createSession(userId) {
     const token = randomUUID();
     const createdAt = nowIso();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = nowIso(Date.now() + 30 * 24 * 60 * 60 * 1000);
     run(
       `
         INSERT INTO sessions (token, user_id, created_at, expires_at)
@@ -994,7 +1431,7 @@ export function createRepository(options = {}) {
       return null;
     }
 
-    if (session.expires_at < nowIso()) {
+    if (isExpiredTimestamp(session.expires_at)) {
       destroySession(token);
       return null;
     }
@@ -1260,21 +1697,20 @@ export function createRepository(options = {}) {
       SELECT
         ci.*,
         (ci.price_amount - ci.cost_amount) AS unit_margin,
-        (ci.stock_quantity * ci.price_amount) AS stock_value,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM catalog_stock_batches csb WHERE csb.catalog_item_id = ci.id)
+          THEN COALESCE((
+            SELECT ROUND(SUM(csb.quantity_remaining * csb.unit_cost), 2)
+            FROM catalog_stock_batches csb
+            WHERE csb.catalog_item_id = ci.id
+          ), 0)
+          ELSE ci.stock_quantity * ci.cost_amount
+        END AS stock_cost_value,
+        ROUND(ci.stock_quantity * ci.price_amount, 2) AS stock_value,
         CASE
           WHEN ci.cost_amount > 0 THEN ROUND(((ci.price_amount - ci.cost_amount) / ci.cost_amount) * 100, 2)
           ELSE 0
         END AS profit_percent,
-        COALESCE((
-          SELECT ROUND(AVG(sr.new_cost_amount), 2)
-          FROM stock_replenishments sr
-          WHERE sr.catalog_item_id = ci.id
-        ), ci.cost_amount) AS average_cost_amount,
-        COALESCE((
-          SELECT ROUND(AVG(sr.new_price_amount), 2)
-          FROM stock_replenishments sr
-          WHERE sr.catalog_item_id = ci.id
-        ), ci.price_amount) AS average_price_amount,
         (
           SELECT sr.previous_cost_amount
           FROM stock_replenishments sr
@@ -1400,6 +1836,17 @@ export function createRepository(options = {}) {
         if (String(filters.storeInventoryOnly) === "true" && !Number(row.is_store_inventory || 0)) {
           return false;
         }
+        if (filters.fromDate || filters.toDate) {
+          const dateCandidates = [
+            String(row.created_at || "").slice(0, 10),
+            String(row.updated_at || "").slice(0, 10),
+            String(row.last_replenishment_at || "").slice(0, 10),
+            String(row.last_used_at || "").slice(0, 10)
+          ].filter(Boolean);
+          if (!dateCandidates.some((date) => isBetweenDates(date, filters.fromDate, filters.toDate))) {
+            return false;
+          }
+        }
         return true;
       });
   }
@@ -1409,7 +1856,16 @@ export function createRepository(options = {}) {
         SELECT
           ci.*,
           (ci.price_amount - ci.cost_amount) AS unit_margin,
-          (ci.stock_quantity * ci.price_amount) AS stock_value,
+          CASE
+            WHEN EXISTS (SELECT 1 FROM catalog_stock_batches csb WHERE csb.catalog_item_id = ci.id)
+            THEN COALESCE((
+              SELECT ROUND(SUM(csb.quantity_remaining * csb.unit_cost), 2)
+              FROM catalog_stock_batches csb
+              WHERE csb.catalog_item_id = ci.id
+            ), 0)
+            ELSE ci.stock_quantity * ci.cost_amount
+          END AS stock_cost_value,
+          ROUND(ci.stock_quantity * ci.price_amount, 2) AS stock_value,
           CASE
             WHEN ci.stock_quantity <= 0 THEN 'SEM_ESTOQUE'
             WHEN ci.stock_quantity <= ci.min_stock THEN 'BAIXO'
@@ -1498,10 +1954,40 @@ export function createRepository(options = {}) {
 
     const replenishmentHistory = all(
       `
-        SELECT *
-        FROM stock_replenishments
-        WHERE catalog_item_id = :itemId
-        ORDER BY created_at DESC, id DESC
+        SELECT
+          sr.*,
+          csb.id AS batch_id,
+          csb.quantity AS batch_quantity,
+          csb.quantity_remaining AS batch_quantity_remaining,
+          csb.unit_cost AS batch_unit_cost,
+          csb.unit_price AS batch_unit_price
+        FROM stock_replenishments sr
+        LEFT JOIN catalog_stock_batches csb
+          ON csb.source_type = 'REPLENISHMENT'
+         AND csb.source_id = sr.id
+         AND csb.catalog_item_id = sr.catalog_item_id
+        WHERE sr.catalog_item_id = :itemId
+        ORDER BY sr.created_at DESC, sr.id DESC
+      `,
+      { itemId }
+    );
+    const stockBatches = all(
+      `
+        SELECT
+          csb.*,
+          sr.id AS replenishment_id,
+          sr.actor_name AS actor_name,
+          sr.previous_cost_amount AS previous_cost_amount,
+          sr.previous_price_amount AS previous_price_amount,
+          (csb.quantity_remaining * csb.unit_cost) AS remaining_cost_total,
+          (csb.quantity_remaining * csb.unit_price) AS remaining_price_total
+        FROM catalog_stock_batches csb
+        LEFT JOIN stock_replenishments sr
+          ON csb.source_type = 'REPLENISHMENT'
+         AND csb.source_id = sr.id
+         AND csb.catalog_item_id = sr.catalog_item_id
+        WHERE csb.catalog_item_id = :itemId
+        ORDER BY csb.created_at ASC, csb.id ASC
       `,
       { itemId }
     );
@@ -1509,12 +1995,15 @@ export function createRepository(options = {}) {
     return {
       ...normalizeCatalogItem(item),
       usage_history: usageHistory,
-      replenishment_history: replenishmentHistory
+      replenishment_history: replenishmentHistory,
+      stock_batches: stockBatches
     };
   }
   function saveCatalogItem(payload) {
     const timestamp = nowIso();
+    syncCatalogStockBatches();
     const locationType = normalizeText(payload.locationType || payload.location_type || (payload.isStoreInventory ? "INVENTARIO" : "ESTOQUE"), "ESTOQUE") || "ESTOQUE";
+    const current = payload.id ? get("SELECT * FROM catalog_items WHERE id = :id", { id: Number(payload.id) }) : null;
     const normalized = {
       id: payload.id ? Number(payload.id) : null,
       sku: normalizeText(payload.sku) || null,
@@ -1555,8 +2044,7 @@ export function createRepository(options = {}) {
           UPDATE catalog_items
           SET sku = :sku, name = :name, brand = :brand, category = :category, subcategory = :subcategory,
                 compatibility = :compatibility, description = :description, item_condition = :itemCondition,
-              stock_quantity = :stockQuantity, min_stock = :minStock, cost_amount = :costAmount,
-              price_amount = :priceAmount, is_complete = :isComplete, active = :active,
+              min_stock = :minStock, cost_amount = :costAmount, price_amount = :priceAmount, is_complete = :isComplete, active = :active,
               is_store_inventory = :isStoreInventory, location_type = :locationType, updated_at = :updatedAt
           WHERE id = :id
         `,
@@ -1565,6 +2053,37 @@ export function createRepository(options = {}) {
           updatedAt: timestamp
         }
       );
+      const previousQuantity = Number(current?.stock_quantity || 0);
+      const desiredQuantity = Math.max(0, Number(normalized.stockQuantity || 0));
+      if (desiredQuantity > previousQuantity) {
+        createStockBatch({
+          catalogItemId: normalized.id,
+          quantity: desiredQuantity - previousQuantity,
+          unitCost: normalized.costAmount,
+          unitPrice: normalized.priceAmount,
+          sourceType: "MANUAL_ADJUSTMENT_IN",
+          sourceId: normalized.id,
+          createdAt: timestamp
+        });
+        refreshCatalogItemStockState(normalized.id, {
+          overrideCostAmount: normalized.costAmount,
+          overridePriceAmount: normalized.priceAmount
+        });
+      } else if (desiredQuantity < previousQuantity) {
+        consumeCatalogStock(normalized.id, previousQuantity - desiredQuantity, {
+          sourceType: "MANUAL_ADJUSTMENT_OUT",
+          sourceId: normalized.id
+        });
+        refreshCatalogItemStockState(normalized.id, {
+          overrideCostAmount: normalized.costAmount,
+          overridePriceAmount: normalized.priceAmount
+        });
+      } else if (desiredQuantity === 0) {
+        refreshCatalogItemStockState(normalized.id, {
+          overrideCostAmount: normalized.costAmount,
+          overridePriceAmount: normalized.priceAmount
+        });
+      }
       return getCatalogItem(normalized.id) || get("SELECT * FROM catalog_items WHERE id = :id", { id: normalized.id });
     }
 
@@ -1585,37 +2104,48 @@ export function createRepository(options = {}) {
         updatedAt: timestamp
       }
     );
-
-    const cashAccountId = payload.cashAccountId ? Number(payload.cashAccountId) : null;
-    const initialCost = normalized.stockQuantity * normalized.costAmount;
-
-    if (initialCost > 0 && payload.registerFinanceEntry !== false) {
-      saveFinanceEntry({
-        entryType: "DESPESA",
-        category: "Compra de produto",
-        description: `Estoque inicial: ${normalized.name} (Qtd: ${normalized.stockQuantity})`,
-        amount: initialCost,
-        entryDate: getLocalDateString(),
-        storeId: payload.storeId ? Number(payload.storeId) : null,
-        cashAccountId,
-        legacySection: "COMPRAS",
-        rawPayload: {
-          source: "CATALOG_INITIAL_STOCK",
-          catalogItemName: normalized.name,
-          stockQuantity: normalized.stockQuantity,
-          unitCost: normalized.costAmount
-        },
-        _actor: payload._actor
-      });
-    }
-
-    return getCatalogItem(Number(result.lastInsertRowid)) || get("SELECT * FROM catalog_items WHERE id = :id", { id: Number(result.lastInsertRowid) });
+    const createdId = Number(result.lastInsertRowid);
+    const initialReplenishmentId = createStockReplenishmentRecord({
+      catalogItemId: createdId,
+      quantity: normalized.stockQuantity,
+      newCostAmount: normalized.costAmount,
+      newPriceAmount: normalized.priceAmount,
+      previousCostAmount: null,
+      previousPriceAmount: null,
+      notes: "Estoque inicial",
+      actorUserId: payload._actor?.id ? Number(payload._actor.id) : null,
+      actorName: normalizeText(payload._actor?.name, "Sistema") || "Sistema",
+      createdAt: timestamp,
+      rawPayload: {
+        source: "CATALOG_INITIAL_STOCK",
+        catalogItemId: createdId,
+        catalogItemName: normalized.name,
+        stockQuantity: normalized.stockQuantity,
+        unitCost: normalized.costAmount
+      }
+    });
+    createStockBatch({
+      catalogItemId: createdId,
+      quantity: normalized.stockQuantity,
+      unitCost: normalized.costAmount,
+      unitPrice: normalized.priceAmount,
+      sourceType: "REPLENISHMENT",
+      sourceId: initialReplenishmentId || createdId,
+      notes: "Estoque inicial",
+      createdAt: timestamp
+    });
+    refreshCatalogItemStockState(createdId, {
+      overrideCostAmount: normalized.costAmount,
+      overridePriceAmount: normalized.priceAmount
+    });
+    return getCatalogItem(createdId) || get("SELECT * FROM catalog_items WHERE id = :id", { id: createdId });
   }
   function replenishCatalogItem(itemId, payload = {}) {
     return transaction(() => _replenishCatalogItem(itemId, payload));
   }
 
   function _replenishCatalogItem(itemId, payload = {}) {
+    syncCatalogStockBatches();
     const current = get("SELECT * FROM catalog_items WHERE id = :id", { id: Number(itemId) });
     if (!current) {
       throw new Error(`Item de catalogo ${itemId} nao encontrado.`);
@@ -1633,48 +2163,54 @@ export function createRepository(options = {}) {
     }
 
     const timestamp = nowIso();
-    run(
-      `
-          INSERT INTO stock_replenishments (
-            catalog_item_id, quantity, new_cost_amount, new_price_amount, previous_cost_amount,
-            previous_price_amount, notes, actor_user_id, actor_name, created_at
-          )
-          VALUES (
-            :catalogItemId, :quantity, :newCostAmount, :newPriceAmount, :previousCostAmount,
-            :previousPriceAmount, :notes, :actorUserId, :actorName, :createdAt
-          )
-        `,
-      {
+    const replenishmentId = createStockReplenishmentRecord({
+      catalogItemId: Number(itemId),
+      quantity,
+      newCostAmount,
+      newPriceAmount,
+      previousCostAmount: current.cost_amount,
+      previousPriceAmount: current.price_amount,
+      notes,
+      actorUserId,
+      actorName,
+      createdAt: timestamp,
+      rawPayload: {
+        source: "CATALOG_REPLENISHMENT",
         catalogItemId: Number(itemId),
+        catalogItemName: current.name,
         quantity,
-        newCostAmount,
-        newPriceAmount,
-        previousCostAmount: current.cost_amount,
-        previousPriceAmount: current.price_amount,
-        notes,
-        actorUserId,
-        actorName,
-        createdAt: timestamp
+        unitCost: newCostAmount
       }
-    );
-
+    });
+    createStockBatch({
+      catalogItemId: Number(itemId),
+      quantity,
+      unitCost: newCostAmount,
+      unitPrice: newPriceAmount,
+      sourceType: "REPLENISHMENT",
+      sourceId: replenishmentId || Number(itemId),
+      notes,
+      createdAt: timestamp
+    });
     run(
       `
           UPDATE catalog_items
-          SET stock_quantity = stock_quantity + :quantity,
-              cost_amount = :costAmount,
+          SET cost_amount = :costAmount,
               price_amount = :priceAmount,
               updated_at = :updatedAt
           WHERE id = :id
         `,
-      {
-        id: Number(itemId),
-        quantity,
+        {
+          id: Number(itemId),
         costAmount: newCostAmount,
         priceAmount: newPriceAmount,
         updatedAt: timestamp
       }
     );
+    refreshCatalogItemStockState(Number(itemId), {
+      overrideCostAmount: newCostAmount,
+      overridePriceAmount: newPriceAmount
+    });
 
     const cashAccountId = payload.cashAccountId ? Number(payload.cashAccountId) : null;
     const totalCost = quantity * newCostAmount;
@@ -1739,6 +2275,7 @@ export function createRepository(options = {}) {
     });
   }
   function revertCatalogReplenishment(replenishmentId) {
+      syncCatalogStockBatches();
       const replenishment = get("SELECT * FROM stock_replenishments WHERE id = :id", { id: Number(replenishmentId) });
       if (!replenishment) {
         throw new Error("Reposicao de estoque nao encontrada.");
@@ -1762,30 +2299,210 @@ export function createRepository(options = {}) {
       if (!current) {
         throw new Error("Item de catalogo nao encontrado para reverter a reposicao.");
       }
-      if (Number(current.stock_quantity || 0) < Number(replenishment.quantity || 0)) {
+      const replenishmentBatch = get(
+        `
+          SELECT *
+          FROM catalog_stock_batches
+          WHERE catalog_item_id = :catalogItemId
+            AND source_type = 'REPLENISHMENT'
+            AND source_id = :replenishmentId
+          ORDER BY id DESC
+          LIMIT 1
+        `,
+        {
+          catalogItemId: Number(replenishment.catalog_item_id),
+          replenishmentId: Number(replenishment.id)
+        }
+      );
+      if (!replenishmentBatch || Number(replenishmentBatch.quantity_remaining || 0) < Number(replenishment.quantity || 0)) {
         throw new Error("Nao e possivel reverter a reposicao porque parte desse estoque ja foi consumida.");
       }
 
       run(
         `
+          DELETE FROM catalog_stock_batches
+          WHERE id = :id
+        `,
+        {
+          id: Number(replenishmentBatch.id)
+        }
+      );
+
+      run(
+        `
           UPDATE catalog_items
-          SET stock_quantity = :stockQuantity,
-              cost_amount = :costAmount,
-              price_amount = :priceAmount,
+          SET price_amount = :priceAmount,
               updated_at = :updatedAt
           WHERE id = :id
         `,
         {
           id: Number(current.id),
-          stockQuantity: Number(current.stock_quantity || 0) - Number(replenishment.quantity || 0),
-          costAmount: replenishment.previous_cost_amount === null ? current.cost_amount : replenishment.previous_cost_amount,
           priceAmount: replenishment.previous_price_amount === null ? current.price_amount : replenishment.previous_price_amount,
           updatedAt: nowIso()
         }
       );
+      refreshCatalogItemStockState(Number(current.id), {
+        overrideCostAmount: replenishment.previous_cost_amount === null ? current.cost_amount : replenishment.previous_cost_amount,
+        overridePriceAmount: replenishment.previous_price_amount === null ? current.price_amount : replenishment.previous_price_amount
+      });
 
       run("DELETE FROM stock_replenishments WHERE id = :id", { id: Number(replenishment.id) });
     return getCatalogItem(Number(replenishment.catalog_item_id));
+  }
+
+  function updateCatalogReplenishment(replenishmentId, payload = {}) {
+    return transaction(() => {
+      const replenishment = get("SELECT * FROM stock_replenishments WHERE id = :id", { id: Number(replenishmentId) });
+      if (!replenishment) {
+        throw new Error("Reposicao de estoque nao encontrada.");
+      }
+      const batch = get(
+        `
+          SELECT *
+          FROM catalog_stock_batches
+          WHERE catalog_item_id = :catalogItemId
+            AND source_type = 'REPLENISHMENT'
+            AND source_id = :replenishmentId
+          ORDER BY id DESC
+          LIMIT 1
+        `,
+        {
+          catalogItemId: Number(replenishment.catalog_item_id),
+          replenishmentId: Number(replenishment.id)
+        }
+      );
+      if (!batch) {
+        throw new Error("Lote vinculado a reposicao nao encontrado.");
+      }
+      if (Number(batch.quantity_remaining || 0) !== Number(batch.quantity || 0)) {
+        throw new Error("Este lote ja teve consumo e nao pode ter custo ou venda alterados.");
+      }
+
+      const newCostAmount = toNumber(payload.costAmount ?? payload.newCostAmount ?? payload.new_cost_amount) ?? Number(replenishment.new_cost_amount || 0);
+      const newPriceAmount = toNumber(payload.priceAmount ?? payload.newPriceAmount ?? payload.new_price_amount) ?? Number(replenishment.new_price_amount || 0);
+      const notes = payload.notes !== undefined ? normalizeText(payload.notes) : normalizeText(replenishment.notes);
+      const timestamp = nowIso();
+
+      run(
+        `
+          UPDATE stock_replenishments
+          SET new_cost_amount = :newCostAmount,
+              new_price_amount = :newPriceAmount,
+              notes = :notes
+          WHERE id = :id
+        `,
+        {
+          id: Number(replenishment.id),
+          newCostAmount,
+          newPriceAmount,
+          notes
+        }
+      );
+      run(
+        `
+          UPDATE catalog_stock_batches
+          SET unit_cost = :unitCost,
+              unit_price = :unitPrice,
+              notes = :notes,
+              updated_at = :updatedAt
+          WHERE id = :id
+        `,
+        {
+          id: Number(batch.id),
+          unitCost: newCostAmount,
+          unitPrice: newPriceAmount,
+          notes,
+          updatedAt: timestamp
+        }
+      );
+
+      const latestRemainingBatch = get(
+        `
+          SELECT unit_cost, unit_price
+          FROM catalog_stock_batches
+          WHERE catalog_item_id = :catalogItemId
+            AND quantity_remaining > 0
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        `,
+        { catalogItemId: Number(replenishment.catalog_item_id) }
+      );
+      refreshCatalogItemStockState(Number(replenishment.catalog_item_id), {
+        overrideCostAmount: latestRemainingBatch?.unit_cost ?? newCostAmount,
+        overridePriceAmount: latestRemainingBatch?.unit_price ?? newPriceAmount
+      });
+      return getCatalogItem(Number(replenishment.catalog_item_id));
+    });
+  }
+
+  function updateCatalogStockBatch(batchId, payload = {}) {
+    return transaction(() => {
+      const batch = get("SELECT * FROM catalog_stock_batches WHERE id = :id", { id: Number(batchId) });
+      if (!batch) {
+        throw new Error("Lote de estoque nao encontrado.");
+      }
+      if (Number(batch.quantity_remaining || 0) !== Number(batch.quantity || 0)) {
+        throw new Error("Este lote ja teve consumo e nao pode ter custo ou venda alterados.");
+      }
+
+      const newCostAmount = toNumber(payload.costAmount ?? payload.unitCost ?? payload.unit_cost) ?? Number(batch.unit_cost || 0);
+      const newPriceAmount = toNumber(payload.priceAmount ?? payload.unitPrice ?? payload.unit_price) ?? Number(batch.unit_price || 0);
+      const notes = payload.notes !== undefined ? normalizeText(payload.notes) : normalizeText(batch.notes);
+      const timestamp = nowIso();
+
+      run(
+        `
+          UPDATE catalog_stock_batches
+          SET unit_cost = :unitCost,
+              unit_price = :unitPrice,
+              notes = :notes,
+              updated_at = :updatedAt
+          WHERE id = :id
+        `,
+        {
+          id: Number(batch.id),
+          unitCost: newCostAmount,
+          unitPrice: newPriceAmount,
+          notes,
+          updatedAt: timestamp
+        }
+      );
+
+      if (normalizeText(batch.source_type).toUpperCase() === "REPLENISHMENT" && Number(batch.source_id || 0) > 0) {
+        run(
+          `
+            UPDATE stock_replenishments
+            SET new_cost_amount = :newCostAmount,
+                new_price_amount = :newPriceAmount,
+                notes = :notes
+            WHERE id = :id
+          `,
+          {
+            id: Number(batch.source_id),
+            newCostAmount,
+            newPriceAmount,
+            notes
+          }
+        );
+      }
+
+      const latestRemainingBatch = get(
+        `
+          SELECT unit_cost, unit_price
+          FROM catalog_stock_batches
+          WHERE catalog_item_id = :catalogItemId
+            AND quantity_remaining > 0
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        `,
+        { catalogItemId: Number(batch.catalog_item_id) }
+      );
+      refreshCatalogItemStockState(Number(batch.catalog_item_id), {
+        overrideCostAmount: latestRemainingBatch?.unit_cost ?? newCostAmount,
+        overridePriceAmount: latestRemainingBatch?.unit_price ?? newPriceAmount
+      });
+      return getCatalogItem(Number(batch.catalog_item_id));
+    });
   }
 
   function deleteCatalogItems(itemIds = []) {
@@ -2388,42 +3105,41 @@ export function createRepository(options = {}) {
   }
 
   function restoreStockForOrder(orderId) {
-    const items = all("SELECT catalog_item_id, quantity FROM order_items WHERE order_id = :orderId", { orderId });
+    syncCatalogStockBatches();
+    const items = all("SELECT id, catalog_item_id, quantity FROM order_items WHERE order_id = :orderId", { orderId });
     for (const item of items) {
-      run(
-        `
-          UPDATE catalog_items
-          SET stock_quantity = stock_quantity + :quantity,
-              updated_at = :updatedAt
-          WHERE id = :catalogItemId
-        `,
-        {
-          quantity: item.quantity,
-          updatedAt: nowIso(),
-          catalogItemId: item.catalog_item_id
-        }
-      );
+      const restored = restoreCatalogStockForSource("ORDER_ITEM", Number(item.id));
+      if (!restored.length) {
+        run(
+          `
+            UPDATE catalog_items
+            SET stock_quantity = stock_quantity + :quantity,
+                updated_at = :updatedAt
+            WHERE id = :catalogItemId
+          `,
+          {
+            quantity: item.quantity,
+            updatedAt: nowIso(),
+            catalogItemId: item.catalog_item_id
+          }
+        );
+      }
     }
   }
 
   function applyStockForOrder(orderId) {
-    const items = all("SELECT catalog_item_id, quantity FROM order_items WHERE order_id = :orderId", { orderId });
+    syncCatalogStockBatches();
+    const items = all("SELECT id, catalog_item_id, quantity, unit_price FROM order_items WHERE order_id = :orderId ORDER BY id ASC", { orderId });
     for (const item of items) {
-      const stock = get("SELECT stock_quantity FROM catalog_items WHERE id = :id", { id: item.catalog_item_id });
-      if (!stock || stock.stock_quantity < item.quantity) {
-        throw new Error("Estoque insuficiente para um dos itens da OS.");
-      }
+      const consumption = consumeCatalogStock(Number(item.catalog_item_id), Number(item.quantity || 0), {
+        sourceType: "ORDER_ITEM",
+        sourceId: Number(item.id)
+      });
       run(
-        `
-          UPDATE catalog_items
-          SET stock_quantity = stock_quantity - :quantity,
-              updated_at = :updatedAt
-          WHERE id = :catalogItemId
-        `,
+        "UPDATE order_items SET unit_cost = :unitCost WHERE id = :id",
         {
-          quantity: item.quantity,
-          updatedAt: nowIso(),
-          catalogItemId: item.catalog_item_id
+          id: Number(item.id),
+          unitCost: Number(consumption.unitCost || 0)
         }
       );
     }
@@ -2952,26 +3668,3 @@ export function createRepository(options = {}) {
     };
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

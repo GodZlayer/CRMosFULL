@@ -23,9 +23,11 @@ import {
   downloadLegacyWorkbookSources,
   importMysqlToSqlite
 } from "./system-transfer.mjs";
+import { createOdsWorkbook } from "./ods-export.mjs";
 import {
   getLocalDateParts,
   getLocalDateString,
+  isExpiredTimestamp,
   isBetweenDates,
   matchesSearch,
   normalizeText,
@@ -50,6 +52,9 @@ const FINANCE_SHEET_ACCOUNT_ORDER = new Map(
   FINANCE_SHEET_ACCOUNT_SEEDS.map((account, index) => [account.code, index])
 );
 const LEGACY_GENERIC_CASH_ACCOUNT_CODES = ["DINHEIRO", "PIX_PJ", "MAQUINA", "OUTROS"];
+const INTERNAL_TRANSFER_ENTRY_TYPE = "TRANSFERENCIA";
+const INTERNAL_TRANSFER_OUT = "TRANSFER_OUT";
+const INTERNAL_TRANSFER_IN = "TRANSFER_IN";
 const PAYMENT_METHOD_ACCOUNT_CODE_MAP = {
   CC_PIX_PJ_MAQ_VERM: "CC_PIX_PJ_MAQ_VERM",
   MAQ_AMARELA_PIX_CEL: "MAQ_AMARELA_PIX_CEL",
@@ -113,6 +118,8 @@ export function createAppRepository(options = {}) {
   const baseReplenishCatalogItem = repo.replenishCatalogItem.bind(repo);
   const baseReplenishCatalogBatch = repo.replenishCatalogBatch.bind(repo);
   const baseRevertCatalogReplenishment = repo.revertCatalogReplenishment.bind(repo);
+  const baseUpdateCatalogReplenishment = repo.updateCatalogReplenishment.bind(repo);
+  const baseUpdateCatalogStockBatch = repo.updateCatalogStockBatch.bind(repo);
   const baseDeleteCatalogItems = repo.deleteCatalogItems.bind(repo);
   const baseSaveService = repo.saveService.bind(repo);
   const baseDeleteService = repo.deleteService.bind(repo);
@@ -150,6 +157,8 @@ export function createAppRepository(options = {}) {
     replenishCatalogItem,
     replenishCatalogBatch,
     revertCatalogReplenishment,
+    updateCatalogReplenishment,
+    updateCatalogStockBatch,
     revertFinancialTransaction,
     deleteCatalogItems,
     saveService,
@@ -198,6 +207,7 @@ export function createAppRepository(options = {}) {
     listStoreCashMovements,
     getFinanceWorkbookView,
     saveStoreCashMovement,
+    saveStoreCashTransfer,
     listCashSessions,
     openCashSession,
     closeCashSession,
@@ -208,6 +218,7 @@ export function createAppRepository(options = {}) {
     listLegacyImportRows,
     getLegacyImportSummary,
     importLegacyOds,
+    exportOperationalOds,
     backupToMysql,
     createMysqlDump,
     importFromMysql,
@@ -981,8 +992,18 @@ export function createAppRepository(options = {}) {
     const totals = get(
       `
         SELECT
-          COALESCE(SUM(CASE WHEN entry_type = 'RECEITA' THEN amount ELSE 0 END), 0) AS total_revenue,
-          COALESCE(SUM(CASE WHEN entry_type = 'DESPESA' THEN amount ELSE 0 END), 0) AS total_expense
+          COALESCE(SUM(
+            CASE
+              WHEN entry_type = 'RECEITA' OR movement_type = 'TRANSFER_IN' THEN amount
+              ELSE 0
+            END
+          ), 0) AS total_revenue,
+          COALESCE(SUM(
+            CASE
+              WHEN entry_type = 'DESPESA' OR movement_type = 'TRANSFER_OUT' THEN amount
+              ELSE 0
+            END
+          ), 0) AS total_expense
         FROM store_cash_movements
         WHERE cash_account_id = :accountId
       `,
@@ -1019,7 +1040,7 @@ export function createAppRepository(options = {}) {
         null,
         payload.paymentMethod || payload.payment_method
       );
-    const amount = Math.max(0, toNumber(payload.amount) ?? 0);
+    const amount = roundCurrency(Number(toNumber(payload.amount) ?? 0));
     const entryType = normalizeText(payload.entryType, "RECEITA") || "RECEITA";
     const timestamp = nowIso();
     const result = run(
@@ -1066,6 +1087,135 @@ export function createAppRepository(options = {}) {
       refreshCashSessionExpectedAmount(Number(payload.cashSessionId));
     }
     return get("SELECT * FROM store_cash_movements WHERE id = :id", { id: Number(result.lastInsertRowid) });
+  }
+
+  function saveStoreCashTransfer(payload = {}) {
+    const actor = payload._actor || payload.actor;
+    const normalizedActor = normalizeActor(actor);
+    const store = requireStoreContext(payload);
+    const sourceAccountId = Number(payload.fromCashAccountId ?? payload.from_cash_account_id ?? 0);
+    const destinationAccountId = Number(payload.toCashAccountId ?? payload.to_cash_account_id ?? 0);
+    const amount = roundCurrency(Number(toNumber(payload.amount) ?? 0));
+    const movementDate = normalizeText(payload.movementDate || payload.movement_date, getLocalDateString()) || getLocalDateString();
+    const notes = normalizeText(payload.notes);
+
+    if (!sourceAccountId || !destinationAccountId) {
+      throw new Error("Selecione a conta de origem e a conta de destino.");
+    }
+    if (sourceAccountId === destinationAccountId) {
+      throw new Error("A conta de origem precisa ser diferente da conta de destino.");
+    }
+    if (amount === 0) {
+      throw new Error("Informe um valor diferente de zero para transferir.");
+    }
+
+    const sourceAccount = get(
+      "SELECT * FROM store_cash_accounts WHERE id = :id AND store_id = :storeId AND active = 1",
+      { id: sourceAccountId, storeId: store.id }
+    );
+    const destinationAccount = get(
+      "SELECT * FROM store_cash_accounts WHERE id = :id AND store_id = :storeId AND active = 1",
+      { id: destinationAccountId, storeId: store.id }
+    );
+
+    if (!sourceAccount) {
+      throw new Error("Conta de origem nao encontrada ou inativa.");
+    }
+    if (!destinationAccount) {
+      throw new Error("Conta de destino nao encontrada ou inativa.");
+    }
+
+    const timestamp = nowIso();
+    const transferKey = normalizeText(payload.transferKey) || randomUUID();
+    const rawPayloadBase = {
+      source: "INTERNAL_CASH_TRANSFER",
+      transferKey,
+      fromCashAccountId: sourceAccount.id,
+      fromCashAccountCode: sourceAccount.code,
+      fromCashAccountName: sourceAccount.name,
+      toCashAccountId: destinationAccount.id,
+      toCashAccountCode: destinationAccount.code,
+      toCashAccountName: destinationAccount.name,
+      amount,
+      movementDate,
+      notes
+    };
+
+    transaction(() => {
+      run(
+        `
+          INSERT INTO store_cash_movements (
+            store_id, cash_session_id, finance_entry_id, sale_id, cash_account_id, movement_type, entry_type,
+            description, amount, movement_date, source_workbook, source_sheet, source_row, legacy_section,
+            actor_user_id, actor_name, raw_payload, created_at, updated_at
+          )
+          VALUES (
+            :storeId, NULL, NULL, NULL, :cashAccountId, :movementType, :entryType,
+            :description, :amount, :movementDate, '', '', NULL, '',
+            :actorUserId, :actorName, :rawPayload, :createdAt, :updatedAt
+          )
+        `,
+        {
+          storeId: store.id,
+          cashAccountId: sourceAccount.id,
+          movementType: INTERNAL_TRANSFER_OUT,
+          entryType: INTERNAL_TRANSFER_ENTRY_TYPE,
+          description: normalizeText(payload.sourceDescription, `Transferencia para ${destinationAccount.name}`) || `Transferencia para ${destinationAccount.name}`,
+          amount,
+          movementDate,
+          actorUserId: normalizedActor.actorUserId,
+          actorName: normalizedActor.actorName,
+          rawPayload: JSON.stringify({ ...rawPayloadBase, direction: "OUT" }),
+          createdAt: timestamp,
+          updatedAt: timestamp
+        }
+      );
+
+      run(
+        `
+          INSERT INTO store_cash_movements (
+            store_id, cash_session_id, finance_entry_id, sale_id, cash_account_id, movement_type, entry_type,
+            description, amount, movement_date, source_workbook, source_sheet, source_row, legacy_section,
+            actor_user_id, actor_name, raw_payload, created_at, updated_at
+          )
+          VALUES (
+            :storeId, NULL, NULL, NULL, :cashAccountId, :movementType, :entryType,
+            :description, :amount, :movementDate, '', '', NULL, '',
+            :actorUserId, :actorName, :rawPayload, :createdAt, :updatedAt
+          )
+        `,
+        {
+          storeId: store.id,
+          cashAccountId: destinationAccount.id,
+          movementType: INTERNAL_TRANSFER_IN,
+          entryType: INTERNAL_TRANSFER_ENTRY_TYPE,
+          description: normalizeText(payload.destinationDescription, `Transferencia de ${sourceAccount.name}`) || `Transferencia de ${sourceAccount.name}`,
+          amount,
+          movementDate,
+          actorUserId: normalizedActor.actorUserId,
+          actorName: normalizedActor.actorName,
+          rawPayload: JSON.stringify({ ...rawPayloadBase, direction: "IN" }),
+          createdAt: timestamp,
+          updatedAt: timestamp
+        }
+      );
+
+      recalculateStoreCashAccountBalance(sourceAccount.id);
+      recalculateStoreCashAccountBalance(destinationAccount.id);
+      writeAuditLog(actor, "STORE_CASH_TRANSFER", null, "TRANSFER", sourceAccount, destinationAccount, {
+        amount,
+        movementDate,
+        fromCashAccountId: sourceAccount.id,
+        toCashAccountId: destinationAccount.id,
+        transferKey
+      });
+    });
+
+    return {
+      success: true,
+      fromAccount: get("SELECT * FROM store_cash_accounts WHERE id = :id", { id: sourceAccount.id }),
+      toAccount: get("SELECT * FROM store_cash_accounts WHERE id = :id", { id: destinationAccount.id })
+    };
   }
 
   function normalizeLegacyOrderStatuses() {
@@ -1695,6 +1845,7 @@ export function createAppRepository(options = {}) {
   }
 
   function adjustCatalogStock(catalogItemId, quantityDelta, unitCost = null, actor = null, reason = "MANUAL") {
+    repo.syncCatalogStockBatches();
     const current = get("SELECT * FROM catalog_items WHERE id = :id", { id: catalogItemId });
     if (!current) {
       throw new Error("Item de catalogo nao encontrado para ajuste de estoque.");
@@ -1705,25 +1856,66 @@ export function createAppRepository(options = {}) {
       throw new Error(`Estoque insuficiente para ${current.name}.`);
     }
 
-    run(
-      `
-        UPDATE catalog_items
-        SET stock_quantity = :stockQuantity,
-            cost_amount = :costAmount,
-            updated_at = :updatedAt
-        WHERE id = :id
-      `,
-      {
-        id: catalogItemId,
-        stockQuantity: nextQuantity,
-        costAmount: unitCost === null ? current.cost_amount : unitCost,
-        updatedAt: nowIso()
-      }
-    );
+    if (Number(quantityDelta || 0) > 0) {
+      createCatalogStockBatchForAdjustment(catalogItemId, Number(quantityDelta || 0), unitCost, Number(current.price_amount || 0), reason);
+    } else if (Number(quantityDelta || 0) < 0) {
+      repo.consumeCatalogStock(catalogItemId, Math.abs(Number(quantityDelta || 0)), {
+        sourceType: "APP_STOCK_ADJUSTMENT",
+        sourceId: Number(Date.now())
+      });
+    } else if (unitCost !== null && Number(current.stock_quantity || 0) <= 0) {
+      run(
+        `
+          UPDATE catalog_items
+          SET cost_amount = :costAmount,
+              updated_at = :updatedAt
+          WHERE id = :id
+        `,
+        {
+          id: catalogItemId,
+          costAmount: Number(unitCost || 0),
+          updatedAt: nowIso()
+        }
+      );
+    }
 
     const updated = get("SELECT * FROM catalog_items WHERE id = :id", { id: catalogItemId });
     writeAuditLog(actor, "STOCK", catalogItemId, "ADJUST", current, updated, { reason, quantityDelta });
     return updated;
+  }
+
+  function createCatalogStockBatchForAdjustment(catalogItemId, quantity, unitCost, unitPrice, reason = "MANUAL") {
+    const normalizedQuantity = Math.max(0, Number(quantity || 0));
+    if (normalizedQuantity <= 0) {
+      return null;
+    }
+    const timestamp = nowIso();
+    run(
+      `
+        INSERT INTO catalog_stock_batches (
+          catalog_item_id, source_type, source_id, quantity, quantity_remaining,
+          unit_cost, unit_price, notes, created_at, updated_at
+        )
+        VALUES (
+          :catalogItemId, :sourceType, :sourceId, :quantity, :quantityRemaining,
+          :unitCost, :unitPrice, :notes, :createdAt, :updatedAt
+        )
+      `,
+      {
+        catalogItemId: Number(catalogItemId),
+        sourceType: normalizeText(reason, "APP_MANUAL") || "APP_MANUAL",
+        sourceId: Number(Date.now()),
+        quantity: normalizedQuantity,
+        quantityRemaining: normalizedQuantity,
+        unitCost: toNumber(unitCost) ?? 0,
+        unitPrice: toNumber(unitPrice) ?? 0,
+        notes: normalizeText(reason),
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }
+    );
+    repo.syncCatalogStockBatches();
+    return get("SELECT * FROM catalog_items WHERE id = :id", { id: Number(catalogItemId) });
   }
 
   function applyFiscalDocumentActions(documentId, payload = {}) {
@@ -2019,6 +2211,9 @@ export function createAppRepository(options = {}) {
       return normalizeText(entry.finance_category);
     }
     const rawPayload = safeParseJson(entry?.raw_payload, {});
+    if (normalizeText(entry?.movement_type) === INTERNAL_TRANSFER_OUT || normalizeText(entry?.movement_type) === INTERNAL_TRANSFER_IN) {
+      return "Transferencia interna";
+    }
     if (normalizeText(rawPayload.category)) {
       return normalizeText(rawPayload.category);
     }
@@ -2328,12 +2523,107 @@ export function createAppRepository(options = {}) {
       accounts,
       cashManagement,
       ledger,
-      entriesAndExpenses: unifiedFinanceFlow.filter((entry) => normalizeCashFlowSection(entry) !== "COMPRAS"),
+      entriesAndExpenses: unifiedFinanceFlow.filter((entry) => normalizeCashFlowSection(entry) !== "COMPRAS" && normalizeText(entry.entry_type) !== INTERNAL_TRANSFER_ENTRY_TYPE),
       purchases: unifiedFinanceFlow.filter((entry) => normalizeCashFlowSection(entry) === "COMPRAS"),
       purchaseRequests: listPurchaseRequests(filters),
       lowStockItems: listLowStockPurchaseItems(filters),
       importSummary
     };
+  }
+
+  function listFinanceReportEntries(filters = {}) {
+    const accountsById = new Map(
+      listStoreCashAccounts(filters.storeId ? Number(filters.storeId) : undefined).map((account) => [Number(account.id), account])
+    );
+    const replenishmentsByFinanceEntryId = new Map();
+    all(
+      `
+        SELECT id, finance_entry_id, extra_finance_entry_id
+        FROM stock_replenishments
+        WHERE finance_entry_id IS NOT NULL OR extra_finance_entry_id IS NOT NULL
+      `
+    ).forEach((row) => {
+      if (row.finance_entry_id) {
+        replenishmentsByFinanceEntryId.set(Number(row.finance_entry_id), Number(row.id));
+      }
+      if (row.extra_finance_entry_id) {
+        replenishmentsByFinanceEntryId.set(Number(row.extra_finance_entry_id), Number(row.id));
+      }
+    });
+
+    return repo.listFinanceEntries(filters).map((entry) => {
+      const cashAccount = entry.cash_account_id ? accountsById.get(Number(entry.cash_account_id)) : null;
+      return {
+        ...entry,
+        cash_account_name: normalizeText(cashAccount?.name),
+        cash_account_code: normalizeText(cashAccount?.code),
+        replenishment_id: replenishmentsByFinanceEntryId.get(Number(entry.id)) || null,
+        finance_entry_id: Number(entry.id || 0) || null
+      };
+    });
+  }
+
+  function listReplenishmentReportEntries(filters = {}) {
+    function buildReplenishmentReportDescription(row) {
+      const itemName = normalizeText(row.catalog_item_name, "Reposição de estoque") || "Reposição de estoque";
+      const notes = normalizeText(row.notes);
+      const quantity = Number(row.quantity || 0);
+      const quantityLabel = quantity > 0 ? ` (Qtd: ${quantity})` : "";
+      if (notes) {
+        return `${notes}: ${itemName}${quantityLabel}`;
+      }
+      return `Reposição de estoque: ${itemName}${quantityLabel}`;
+    }
+
+    const rows = all(
+      `
+        SELECT
+          sr.*,
+          ci.name AS catalog_item_name,
+          ci.sku AS catalog_item_sku
+        FROM stock_replenishments sr
+        JOIN catalog_items ci ON ci.id = sr.catalog_item_id
+        ORDER BY sr.created_at DESC, sr.id DESC
+      `
+    );
+
+    return rows
+      .filter((row) => {
+        if (filters.fromDate || filters.toDate) {
+          if (!isBetweenDates(String(row.created_at || "").slice(0, 10), filters.fromDate, filters.toDate)) {
+            return false;
+          }
+        }
+        if (!matchesSearch(
+          `${row.catalog_item_name || ""} ${row.catalog_item_sku || ""} ${row.notes || ""} ${row.source_sheet || ""}`,
+          filters.search
+        )) {
+          return false;
+        }
+        return true;
+      })
+      .map((row) => ({
+        id: -Number(row.id),
+        entry_type: "DESPESA",
+        category: "Reposição de estoque",
+        description: buildReplenishmentReportDescription(row),
+        amount: roundCurrency(Number(row.quantity || 0) * Number(row.new_cost_amount || 0)),
+        entry_date: String(row.created_at || "").slice(0, 10),
+        payment_method: "NAO_DEFINIDO",
+        order_id: null,
+        order_code: "",
+        store_id: filters.storeId ? Number(filters.storeId) : null,
+        cash_account_id: null,
+        cash_account_name: "",
+        cash_account_code: "",
+        replenishment_id: Number(row.id || 0) || null,
+        finance_entry_id: null,
+        source_workbook: normalizeText(row.source_workbook),
+        source_sheet: normalizeText(row.source_sheet),
+        source_row: row.source_row !== undefined && row.source_row !== null ? Number(row.source_row) : null,
+        legacy_section: "COMPRAS",
+        raw_payload: row.raw_payload || ""
+      }));
   }
 
   function listPosSales(filters = {}) {
@@ -2589,7 +2879,7 @@ export function createAppRepository(options = {}) {
 
       const saleId = Number(result.lastInsertRowid);
       for (const item of preparedItems) {
-        run(
+        const insertResult = run(
           `
             INSERT INTO pos_sale_items (
               sale_id, catalog_item_id, service_catalog_id, item_type, item_name, sku, quantity, unit_cost, unit_price, line_total, created_at
@@ -2613,7 +2903,15 @@ export function createAppRepository(options = {}) {
           }
         );
         if (item.catalogItem) {
-          adjustCatalogStock(item.catalogItem.id, item.quantity * -1, item.unitCost, actor, "PDV_SALE");
+          const saleItemId = Number(insertResult.lastInsertRowid || 0);
+          const consumption = repo.consumeCatalogStock(Number(item.catalogItem.id), Number(item.quantity || 0), {
+            sourceType: "POS_SALE_ITEM",
+            sourceId: saleItemId
+          });
+          run("UPDATE pos_sale_items SET unit_cost = :unitCost WHERE id = :id", {
+            id: saleItemId,
+            unitCost: Number(consumption.unitCost || 0)
+          });
         }
       }
 
@@ -2695,13 +2993,16 @@ export function createAppRepository(options = {}) {
         if (!Number(item.catalog_item_id || 0)) {
           continue;
         }
-        adjustCatalogStock(
-          Number(item.catalog_item_id),
-          Number(item.quantity || 0),
-          Number(item.unit_cost || 0),
-          actor,
-          "PDV_DELETE"
-        );
+        const restored = repo.restoreCatalogStockForSource("POS_SALE_ITEM", Number(item.id));
+        if (!restored.length) {
+          adjustCatalogStock(
+            Number(item.catalog_item_id),
+            Number(item.quantity || 0),
+            Number(item.unit_cost || 0),
+            actor,
+            "PDV_DELETE"
+          );
+        }
       }
 
       const affectedCashAccounts = all(
@@ -2898,7 +3199,7 @@ export function createAppRepository(options = {}) {
 
     const token = randomUUID();
     const createdAt = nowIso();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = nowIso(Date.now() + 30 * 24 * 60 * 60 * 1000);
     run(
       `
         INSERT INTO company_sessions (token, company_code, active_user_id, created_at, expires_at)
@@ -2924,7 +3225,7 @@ export function createAppRepository(options = {}) {
       return null;
     }
 
-    if (session.expires_at < nowIso()) {
+    if (isExpiredTimestamp(session.expires_at)) {
       run("DELETE FROM company_sessions WHERE token = :token", { token });
       return null;
     }
@@ -3245,6 +3546,37 @@ export function createAppRepository(options = {}) {
       syncLowStockNotifications();
       return result;
     });
+  }
+
+  function updateCatalogReplenishment(replenishmentId, payload = {}) {
+    const actor = payload._actor || payload.actor;
+    const beforeState = get("SELECT * FROM stock_replenishments WHERE id = :id", { id: Number(replenishmentId) });
+    if (!beforeState) {
+      throw new Error("Reposicao de estoque nao encontrada.");
+    }
+    const result = baseUpdateCatalogReplenishment(Number(replenishmentId), payload);
+    writeAuditLog(actor, "STOCK_REPLENISHMENT", Number(replenishmentId), "UPDATE_LOT", beforeState, result, {
+      catalogItemId: Number(beforeState.catalog_item_id || 0),
+      quantity: Number(beforeState.quantity || 0)
+    });
+    syncLowStockNotifications();
+    return result;
+  }
+
+  function updateCatalogStockBatch(batchId, payload = {}) {
+    const actor = payload._actor || payload.actor;
+    const beforeState = get("SELECT * FROM catalog_stock_batches WHERE id = :id", { id: Number(batchId) });
+    if (!beforeState) {
+      throw new Error("Lote de estoque nao encontrado.");
+    }
+    const result = baseUpdateCatalogStockBatch(Number(batchId), payload);
+    writeAuditLog(actor, "CATALOG_STOCK_BATCH", Number(batchId), "UPDATE_LOT", beforeState, result, {
+      catalogItemId: Number(beforeState.catalog_item_id || 0),
+      sourceType: beforeState.source_type || "",
+      sourceId: Number(beforeState.source_id || 0)
+    });
+    syncLowStockNotifications();
+    return result;
   }
 
   function findStockReplenishmentByFinanceEntry(financeEntry) {
@@ -5291,6 +5623,305 @@ export function createAppRepository(options = {}) {
     };
   }
 
+  function exportOperationalOds(payload = {}) {
+    const actor = payload._actor || payload.actor;
+    const store = requireStoreContext(payload);
+    const exportedAt = nowIso();
+
+    const summaryRows = [
+      { campo: "Exportado em", valor: exportedAt },
+      { campo: "Loja", valor: store.short_name || store.name || "" },
+      { campo: "Codigo da loja", valor: store.code || "" }
+    ];
+
+    const cashAccounts = listStoreCashAccounts(store.id).map((item) => ({
+      id: Number(item.id || 0),
+      codigo: normalizeText(item.code),
+      nome: normalizeText(item.name),
+      saldo_inicial: Number(item.baseline_amount || 0),
+      saldo_atual: Number(item.balance_amount || 0),
+      ativo: Number(item.active || 0),
+      total_movimentos: Number(item.movement_count || 0),
+      ultimo_movimento: normalizeText(item.last_movement_date)
+    }));
+    summaryRows.push({ campo: "Contas de caixa", valor: cashAccounts.length });
+
+    const cashMovements = listStoreCashMovements({ storeId: store.id }).map((item) => ({
+      id: Number(item.id || 0),
+      data_movimento: normalizeText(item.movement_date),
+      tipo_lancamento: normalizeText(item.entry_type),
+      tipo_movimento: normalizeText(item.movement_type),
+      descricao: normalizeText(item.description),
+      valor: Number(item.amount || 0),
+      conta_caixa_id: item.cash_account_id ? Number(item.cash_account_id) : null,
+      conta_caixa_codigo: normalizeText(item.cash_account_code),
+      conta_caixa_nome: normalizeText(item.cash_account_name),
+      categoria_financeira: normalizeText(item.finance_category),
+      forma_pagamento: normalizeText(item.finance_payment_method),
+      venda_pdv_codigo: normalizeText(item.sale_code),
+      workbook_origem: normalizeText(item.source_workbook),
+      aba_origem: normalizeText(item.source_sheet),
+      linha_origem: item.source_row ?? null,
+      secao_legada: normalizeText(item.legacy_section),
+      payload_bruto: normalizeText(item.raw_payload)
+    }));
+    summaryRows.push({ campo: "Movimentos de caixa", valor: cashMovements.length });
+
+    const financeEntries = listFinanceReportEntries({ storeId: store.id }).map((item) => ({
+      id: Number(item.id || 0),
+      data_lancamento: normalizeText(item.entry_date),
+      tipo: normalizeText(item.entry_type),
+      categoria: normalizeText(item.category),
+      descricao: normalizeText(item.description),
+      valor: Number(item.amount || 0),
+      forma_pagamento: normalizeText(item.payment_method),
+      conta_caixa_id: item.cash_account_id ? Number(item.cash_account_id) : null,
+      conta_caixa_codigo: normalizeText(item.cash_account_code),
+      conta_caixa_nome: normalizeText(item.cash_account_name),
+      pedido_id: item.order_id ? Number(item.order_id) : null,
+      codigo_os: normalizeText(item.order_code),
+      reposicao_id: item.replenishment_id ? Number(item.replenishment_id) : null,
+      workbook_origem: normalizeText(item.source_workbook),
+      aba_origem: normalizeText(item.source_sheet),
+      linha_origem: item.source_row ?? null,
+      secao_legada: normalizeText(item.legacy_section),
+      payload_bruto: normalizeText(item.raw_payload)
+    }));
+    summaryRows.push({ campo: "Lancamentos financeiros", valor: financeEntries.length });
+
+    const inventory = repo.listCatalogItems({}).map((item) => ({
+      id: Number(item.id || 0),
+      sku: normalizeText(item.sku),
+      nome: normalizeText(item.name),
+      marca: normalizeText(item.brand),
+      categoria: normalizeText(item.category),
+      subcategoria: normalizeText(item.subcategory),
+      condicao: normalizeText(item.item_condition),
+      estoque: Number(item.stock_quantity || 0),
+      estoque_minimo: Number(item.min_stock || 0),
+      custo: Number(item.cost_amount || 0),
+      preco: Number(item.price_amount || 0),
+      valor_custo_estoque: Number(item.stock_cost_value || 0),
+      valor_venda_estoque: Number(item.stock_value || 0),
+      situacao_estoque: normalizeText(item.stock_health_label),
+      ativo: Number(item.active || 0),
+      uso_em_os: Number(item.linked_orders_count || 0)
+    }));
+    summaryRows.push({ campo: "Itens de estoque", valor: inventory.length });
+
+    const replenishments = listReplenishmentReportEntries({ storeId: store.id }).map((item) => ({
+      id: Number(item.replenishment_id || item.id || 0),
+      data: normalizeText(item.entry_date),
+      descricao: normalizeText(item.description),
+      valor: Number(item.amount || 0),
+      workbook_origem: normalizeText(item.source_workbook),
+      aba_origem: normalizeText(item.source_sheet),
+      linha_origem: item.source_row ?? null
+    }));
+    summaryRows.push({ campo: "Reposicoes de estoque", valor: replenishments.length });
+
+    const orders = repo.listOrders({}).map((item) => ({
+      id: Number(item.id || 0),
+      codigo: normalizeText(item.code),
+      cliente: normalizeText(item.client_name),
+      telefone_cliente: normalizeText(item.client_phone),
+      equipamento: normalizeText(item.equipment),
+      defeito: normalizeText(item.defect),
+      tecnico: normalizeText(item.technician_name),
+      status_os: normalizeText(item.order_status),
+      status_aprovacao: normalizeText(item.approval_status),
+      total: Number(item.total_amount || 0),
+      aberto_em: normalizeText(item.opened_at),
+      concluido_em: normalizeText(item.concluded_at),
+      atualizado_em: normalizeText(item.updated_at)
+    }));
+    summaryRows.push({ campo: "Ordens de servico", valor: orders.length });
+
+    const orderItems = all(
+      `
+        SELECT
+          oi.*,
+          o.code AS order_code
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        ORDER BY oi.id ASC
+      `
+    ).map((item) => ({
+      id: Number(item.id || 0),
+      os_id: Number(item.order_id || 0),
+      codigo_os: normalizeText(item.order_code),
+      catalogo_id: item.catalog_item_id ? Number(item.catalog_item_id) : null,
+      item: normalizeText(item.item_name),
+      sku: normalizeText(item.sku),
+      categoria: normalizeText(item.category),
+      condicao: normalizeText(item.item_condition),
+      quantidade: Number(item.quantity || 0),
+      custo_unitario: Number(item.unit_cost || 0),
+      preco_unitario: Number(item.unit_price || 0)
+    }));
+    summaryRows.push({ campo: "Itens de OS", valor: orderItems.length });
+
+    const clients = repo.listClients({}).map((item) => ({
+      id: Number(item.id || 0),
+      nome: normalizeText(item.name),
+      telefone: normalizeText(item.phone),
+      email: normalizeText(item.email),
+      documento: normalizeText(item.document),
+      endereco: normalizeText(item.address),
+      pedidos: Number(item.orders_count || 0),
+      gasto_total: Number(item.total_spent || 0),
+      pedidos_abertos: Number(item.open_orders || 0)
+    }));
+    summaryRows.push({ campo: "Clientes", valor: clients.length });
+
+    const posSales = listPosSales({ storeId: store.id }).map((item) => ({
+      id: Number(item.id || 0),
+      codigo: normalizeText(item.code),
+      cliente: normalizeText(item.client_name),
+      operador: normalizeText(item.operator_name),
+      subtotal: Number(item.subtotal_amount || 0),
+      desconto: Number(item.discount_amount || 0),
+      total: Number(item.total_amount || 0),
+      formas_pagamento: normalizeText(item.payment_summary),
+      troco: Number(item.change_amount || 0),
+      criado_em: normalizeText(item.created_at)
+    }));
+    summaryRows.push({ campo: "Vendas PDV", valor: posSales.length });
+
+    const posSaleItems = all(
+      `
+        SELECT
+          psi.*,
+          ps.code AS sale_code
+        FROM pos_sale_items psi
+        JOIN pos_sales ps ON ps.id = psi.sale_id
+        WHERE ps.store_id = :storeId
+        ORDER BY psi.id ASC
+      `,
+      { storeId: store.id }
+    ).map((item) => ({
+      id: Number(item.id || 0),
+      venda_id: Number(item.sale_id || 0),
+      codigo_venda: normalizeText(item.sale_code),
+      tipo_item: normalizeText(item.item_type),
+      catalogo_id: item.catalog_item_id ? Number(item.catalog_item_id) : null,
+      servico_id: item.service_catalog_id ? Number(item.service_catalog_id) : null,
+      descricao: normalizeText(item.item_name),
+      quantidade: Number(item.quantity || 0),
+      custo_unitario: Number(item.unit_cost || 0),
+      preco_unitario: Number(item.unit_price || 0),
+      total_linha: Number(item.line_total || 0)
+    }));
+    summaryRows.push({ campo: "Itens PDV", valor: posSaleItems.length });
+
+    const posPayments = all(
+      `
+        SELECT
+          pp.*,
+          ps.code AS sale_code
+        FROM pos_payments pp
+        JOIN pos_sales ps ON ps.id = pp.sale_id
+        WHERE ps.store_id = :storeId
+        ORDER BY pp.id ASC
+      `,
+      { storeId: store.id }
+    ).map((item) => ({
+      id: Number(item.id || 0),
+      venda_id: Number(item.sale_id || 0),
+      codigo_venda: normalizeText(item.sale_code),
+      forma_pagamento: normalizeText(item.payment_method),
+      valor: Number(item.amount || 0),
+      criado_em: normalizeText(item.created_at)
+    }));
+    summaryRows.push({ campo: "Pagamentos PDV", valor: posPayments.length });
+
+    const legacyRows = listLegacyImportRows({}).map((item) => ({
+      id: Number(item.id || 0),
+      importacao_id: item.import_run_id ? Number(item.import_run_id) : null,
+      workbook_origem: normalizeText(item.source_workbook),
+      aba_origem: normalizeText(item.source_sheet),
+      linha_origem: item.source_row ?? null,
+      entidade: normalizeText(item.entity_type),
+      entidade_id: item.entity_id ? Number(item.entity_id) : null,
+      payload_estruturado: normalizeText(item.structured_payload),
+      payload_bruto: normalizeText(item.raw_payload),
+      importado_em: normalizeText(item.created_at)
+    }));
+    summaryRows.push({ campo: "Linhas importadas do legado", valor: legacyRows.length });
+
+    const sheets = [
+      toSheet("Resumo", summaryRows),
+      toSheet("Saldos Caixa", cashAccounts),
+      toSheet("Movimentos Caixa", cashMovements),
+      toSheet("Lancamentos", financeEntries),
+      toSheet("Estoque", inventory),
+      toSheet("Reposicoes", replenishments),
+      toSheet("Ordens Servico", orders),
+      toSheet("Itens OS", orderItems),
+      toSheet("Clientes", clients),
+      toSheet("Vendas PDV", posSales),
+      toSheet("Itens PDV", posSaleItems),
+      toSheet("Pagamentos PDV", posPayments),
+      toSheet("Importacao Legada", legacyRows)
+    ];
+
+    const fileName = `exportacao-${normalizeText(store.short_name || store.name || "loja").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "loja"}-${exportedAt.slice(0, 10)}.ods`;
+    const buffer = createOdsWorkbook({
+      sheets,
+      meta: {
+        creator: actor?.name || "Sistema",
+        createdAt: exportedAt
+      }
+    });
+
+    writeAuditLog(actor, "SYSTEM_TRANSFER", null, "ODS_EXPORT", null, {
+      fileName,
+      exportedAt,
+      storeId: store.id,
+      sheets: sheets.map((sheet) => ({
+        name: sheet.name,
+        rows: Math.max((sheet.rows?.length || 1) - 1, 0)
+      }))
+    }, {
+      fileName,
+      exportedAt,
+      storeName: store.short_name || store.name
+    });
+
+    return {
+      fileName,
+      exportedAt,
+      store,
+      sheets: sheets.map((sheet) => ({
+        name: sheet.name,
+        rows: Math.max((sheet.rows?.length || 1) - 1, 0)
+      })),
+      buffer
+    };
+  }
+
+  function toSheet(name, rows = []) {
+    const normalizedRows = Array.isArray(rows) ? rows : [];
+    const columns = [];
+    const seen = new Set();
+    for (const row of normalizedRows) {
+      for (const key of Object.keys(row || {})) {
+        if (!seen.has(key)) {
+          seen.add(key);
+          columns.push(key);
+        }
+      }
+    }
+    const header = columns.length ? columns : ["sem_dados"];
+    const body = normalizedRows.length
+      ? normalizedRows.map((row) => header.map((column) => row?.[column] ?? ""))
+      : [["Nenhum registro encontrado."]];
+    return {
+      name,
+      rows: [header, ...body]
+    };
+  }
+
   async function backupToMysql(payload = {}) {
     const actor = payload._actor || payload.actor;
     const summary = await backupSqliteToMysql(db, payload);
@@ -5688,7 +6319,15 @@ export function createAppRepository(options = {}) {
         unitPrice: Number(catalogItem.price_amount || 0)
       }
     );
-    adjustCatalogStock(catalogItemId, quantity * -1, Number(catalogItem.cost_amount || 0), actor, 'ORDER_ITEM_ADD');
+    const orderItemId = Number(get("SELECT last_insert_rowid() AS id")?.id || 0);
+    const consumption = repo.consumeCatalogStock(catalogItemId, quantity, {
+      sourceType: "ORDER_ITEM",
+      sourceId: orderItemId
+    });
+    run("UPDATE order_items SET unit_cost = :unitCost WHERE id = :id", {
+      id: orderItemId,
+      unitCost: Number(consumption.unitCost || 0)
+    });
     const updated = recalculateOrderAmounts(Number(orderId));
     syncOrderRevenueEntry(updated, requireStoreContext(payload).id, actor);
     syncLowStockNotifications();
@@ -5928,8 +6567,21 @@ export function createAppRepository(options = {}) {
       .filter((item) => !String(item.deleted_at || "").trim());
     const posSales = listPosSales(filters);
     const financeWorkbook = getFinanceWorkbookView(filters);
-    const financeEntries = financeWorkbook.entriesAndExpenses || [];
-    const purchases = financeWorkbook.purchases || [];
+    const reportFinanceEntries = listFinanceReportEntries(filters);
+    const financeEntries = reportFinanceEntries.filter((entry) => normalizeCashFlowSection(entry) !== "COMPRAS");
+    const purchaseFinanceEntries = reportFinanceEntries.filter((entry) => normalizeCashFlowSection(entry) === "COMPRAS");
+    const replenishmentOnlyEntries = listReplenishmentReportEntries(filters)
+      .filter((entry) => !entry.finance_entry_id)
+      .filter((entry) => !purchaseFinanceEntries.some((financeEntry) => Number(financeEntry.replenishment_id || 0) === Number(entry.replenishment_id || 0)));
+    const purchases = [...purchaseFinanceEntries, ...replenishmentOnlyEntries]
+      .sort((left, right) => {
+        const leftDate = String(left.entry_date || "");
+        const rightDate = String(right.entry_date || "");
+        if (leftDate !== rightDate) {
+          return rightDate.localeCompare(leftDate);
+        }
+        return Number(right.replenishment_id || right.id || 0) - Number(left.replenishment_id || left.id || 0);
+      });
     const totalPdvValue = posSales.reduce((sum, sale) => sum + Number(sale.total_amount || 0), 0);
     const totalEntries = Number(basePayload.summary.totalOrderValue || 0) + totalPdvValue;
     const rawReportedExpenses = financeEntries
@@ -5970,23 +6622,6 @@ export function createAppRepository(options = {}) {
     };
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

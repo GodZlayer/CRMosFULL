@@ -43,22 +43,22 @@
  <div><strong>OS:</strong> {{ order.code }}</div>
  <div><strong>Abertura:</strong> {{ dateLabel(order.opened_at) }}</div>
  <div><strong>Cliente:</strong> {{ order.client_name }}</div>
- <div><strong>Telefone:</strong> {{ order.client_phone || order.phone_snapshot || "Não informado" }}</div>
- <div><strong>Documento:</strong> {{ order.client_document || "Não informado" }}</div>
+ <div><strong>Telefone:</strong> {{ formattedPhone }}</div>
+ <div><strong>Documento:</strong> {{ documentLabel }}</div>
  <div><strong>Previsão:</strong> {{ dueDateLabel(order.due_date) }}</div>
  <div><strong>Status:</strong> {{ order.order_status }}</div>
- <div><strong>Aprovação:</strong> {{ order.approval_status }}</div>
- <div class="compact-grid__full"><strong>Endereço:</strong> {{ order.client_address || "Sem endereço" }}</div>
+ <div><strong>Aprovação:</strong> {{ approvalLabel }}</div>
+ <div class="compact-grid__full"><strong>Endereço:</strong> {{ addressLabel }}</div>
  </div>
  </div>
  <div class="compact-block">
  <div class="compact-block__title">Equipamento e defeito</div>
  <div><strong>Equipamento:</strong> {{ order.equipment }}</div>
  <div><strong>Defeito:</strong> {{ order.defect }}</div>
- <div><strong>Acessórios:</strong> {{ parsedNotes.accessories.length ? parsedNotes.accessories.join(", ") : "Nenhum acessório marcado" }}</div>
+ <div><strong>Acessórios:</strong> {{ accessoriesLabel }}</div>
  <div v-if="parsedNotes.accessoriesOther"><strong>Outros:</strong> {{ parsedNotes.accessoriesOther }}</div>
  <div><strong>Extras:</strong> {{ order.extras || "Sem extras informados" }}</div>
- <div><strong>Obs.:</strong> {{ parsedNotes.notes || "Sem observações" }}</div>
+ <div><strong>Obs.:</strong> {{ notesLabel }}</div>
  </div>
  <div class="compact-block">
  <div class="compact-block__title">Itens da OS</div>
@@ -84,15 +84,12 @@
  </div>
  <div class="compact-footer">
  <div class="compact-totals">
- <div><strong>Orçamento:</strong> {{ quoteLabel(order.quote_amount) }}</div>
- <div><strong>Serviços:</strong> {{ currency(order.service_amount) }}</div>
- <div><strong>Desconto:</strong> {{ currency(order.discount_amount) }}</div>
- <div><strong>Prazo base:</strong> {{ minutesLabel(order.estimated_total_minutes || 0) }}</div>
- <div class="compact-totals__final"><strong>Total final:</strong> {{ currency(order.total_amount) }}</div>
+ <div class="compact-totals__final"><strong>Orçamento:</strong> {{ currency(order.total_amount) }}</div>
+ <div class="compact-store-line">{{ STORE_FULL_ADDRESS }} <strong>Contato:</strong> {{ STORE_PHONE }}</div>
  </div>
  <div class="compact-signature">
  <div class="compact-signature__line"></div>
- <div>Assinatura da loja</div>
+ <div>Assinatura do cliente</div>
  </div>
  </div>
  </section>
@@ -107,22 +104,22 @@
  <div><strong>OS:</strong> {{ order.code }}</div>
  <div><strong>Abertura:</strong> {{ dateLabel(order.opened_at) }}</div>
  <div><strong>Cliente:</strong> {{ order.client_name }}</div>
- <div><strong>Telefone:</strong> {{ order.client_phone || order.phone_snapshot || "Não informado" }}</div>
- <div><strong>Documento:</strong> {{ order.client_document || "Não informado" }}</div>
+ <div><strong>Telefone:</strong> {{ formattedPhone }}</div>
+ <div><strong>Documento:</strong> {{ documentLabel }}</div>
  <div><strong>Previsão:</strong> {{ dueDateLabel(order.due_date) }}</div>
  <div><strong>Status:</strong> {{ order.order_status }}</div>
- <div><strong>Aprovação:</strong> {{ order.approval_status }}</div>
- <div class="compact-grid__full"><strong>Endereço:</strong> {{ order.client_address || "Sem endereço" }}</div>
+ <div><strong>Aprovação:</strong> {{ approvalLabel }}</div>
+ <div class="compact-grid__full"><strong>Endereço:</strong> {{ addressLabel }}</div>
  </div>
  </div>
  <div class="compact-block">
  <div class="compact-block__title">Equipamento e defeito</div>
  <div><strong>Equipamento:</strong> {{ order.equipment }}</div>
  <div><strong>Defeito:</strong> {{ order.defect }}</div>
- <div><strong>Acessórios:</strong> {{ parsedNotes.accessories.length ? parsedNotes.accessories.join(", ") : "Nenhum acessório marcado" }}</div>
+ <div><strong>Acessórios:</strong> {{ accessoriesLabel }}</div>
  <div v-if="parsedNotes.accessoriesOther"><strong>Outros:</strong> {{ parsedNotes.accessoriesOther }}</div>
  <div><strong>Extras:</strong> {{ order.extras || "Sem extras informados" }}</div>
- <div><strong>Obs.:</strong> {{ parsedNotes.notes || "Sem observações" }}</div>
+ <div><strong>Obs.:</strong> {{ notesLabel }}</div>
  </div>
  <div class="compact-block">
  <div class="compact-block__title">Itens da OS</div>
@@ -148,15 +145,12 @@
  </div>
  <div class="compact-footer">
  <div class="compact-totals">
- <div><strong>Orçamento:</strong> {{ quoteLabel(order.quote_amount) }}</div>
- <div><strong>Serviços:</strong> {{ currency(order.service_amount) }}</div>
- <div><strong>Desconto:</strong> {{ currency(order.discount_amount) }}</div>
- <div><strong>Prazo base:</strong> {{ minutesLabel(order.estimated_total_minutes || 0) }}</div>
- <div class="compact-totals__final"><strong>Total final:</strong> {{ currency(order.total_amount) }}</div>
+ <div class="compact-totals__final"><strong>Orçamento:</strong> {{ currency(order.total_amount) }}</div>
+ <div class="compact-store-line">{{ STORE_FULL_ADDRESS }} <strong>Contato:</strong> {{ STORE_PHONE }}</div>
  </div>
  <div class="compact-signature">
  <div class="compact-signature__line"></div>
- <div>Assinatura do cliente</div>
+ <div>Assinatura da loja</div>
  </div>
  </div>
  </section>
@@ -172,22 +166,22 @@
  <div><strong>OS:</strong> {{ order.code }}</div>
  <div><strong>Abertura:</strong> {{ dateLabel(order.opened_at) }}</div>
  <div><strong>Cliente:</strong> {{ order.client_name }}</div>
- <div><strong>Telefone:</strong> {{ order.client_phone || order.phone_snapshot || "Não informado" }}</div>
- <div><strong>Documento:</strong> {{ order.client_document || "Não informado" }}</div>
+ <div><strong>Telefone:</strong> {{ formattedPhone }}</div>
+ <div><strong>Documento:</strong> {{ documentLabel }}</div>
  <div><strong>Previsão:</strong> {{ dueDateLabel(order.due_date) }}</div>
  <div><strong>Status:</strong> {{ order.order_status }}</div>
- <div><strong>Aprovação:</strong> {{ order.approval_status }}</div>
- <div class="compact-grid__full"><strong>Endereço:</strong> {{ order.client_address || "Sem endereço" }}</div>
+ <div><strong>Aprovação:</strong> {{ approvalLabel }}</div>
+ <div class="compact-grid__full"><strong>Endereço:</strong> {{ addressLabel }}</div>
  </div>
  </div>
  <div class="compact-block">
  <div class="compact-block__title">Equipamento e defeito</div>
  <div><strong>Equipamento:</strong> {{ order.equipment }}</div>
  <div><strong>Defeito:</strong> {{ order.defect }}</div>
- <div><strong>Acessórios:</strong> {{ parsedNotes.accessories.length ? parsedNotes.accessories.join(", ") : "Nenhum acessório marcado" }}</div>
+ <div><strong>Acessórios:</strong> {{ accessoriesLabel }}</div>
  <div v-if="parsedNotes.accessoriesOther"><strong>Outros:</strong> {{ parsedNotes.accessoriesOther }}</div>
  <div><strong>Extras:</strong> {{ order.extras || "Sem extras informados" }}</div>
- <div><strong>Obs.:</strong> {{ parsedNotes.notes || "Sem observações" }}</div>
+ <div><strong>Obs.:</strong> {{ notesLabel }}</div>
  </div>
  <div class="compact-block">
  <div class="compact-block__title">Itens da OS</div>
@@ -213,15 +207,12 @@
  </div>
  <div class="compact-footer">
  <div class="compact-totals">
- <div><strong>Orçamento:</strong> {{ quoteLabel(order.quote_amount) }}</div>
- <div><strong>Serviços:</strong> {{ currency(order.service_amount) }}</div>
- <div><strong>Desconto:</strong> {{ currency(order.discount_amount) }}</div>
- <div><strong>Prazo base:</strong> {{ minutesLabel(order.estimated_total_minutes || 0) }}</div>
- <div class="compact-totals__final"><strong>Total final:</strong> {{ currency(order.total_amount) }}</div>
+ <div class="compact-totals__final"><strong>Orçamento:</strong> {{ currency(order.total_amount) }}</div>
+ <div class="compact-store-line">{{ STORE_FULL_ADDRESS }} <strong>Contato:</strong> {{ STORE_PHONE }}</div>
  </div>
  <div class="compact-signature">
  <div class="compact-signature__line"></div>
- <div>Assinatura da loja</div>
+ <div>Assinatura do cliente</div>
  </div>
  </div>
  </section>
@@ -242,10 +233,12 @@ import type { OrderDetail } from "../services/types";
 const route = useRoute();
 const order = ref<OrderDetail | null>(null);
 const includeClientCopy = ref(false);
-const fontPreset = ref<"compact" | "normal" | "large">("normal");
+const fontPreset = ref<"compact" | "normal" | "large">("large");
 const printSheetRef = ref<HTMLElement | null>(null);
 const PRINT_LOGO_URL =
  "https://assets.zyrosite.com/cdn-cgi/image/format=auto,w=375,fit=crop,q=95/QnUfS5HJ5GJsYLVW/logo-horizontal-em-png-brasil-express-j6F74w6gnr5a0KTa.png";
+const STORE_FULL_ADDRESS = "Av. Francisco Sá, 787 - Loja 111 - Prado | Belo Horizonte - MG, 30411-174";
+const STORE_PHONE = "(31) 99904-2766";
 
 const fontPresetMap = {
  compact: {
@@ -290,6 +283,12 @@ const fontPresetMap = {
 } as const;
 
 const parsedNotes = computed(() => splitOrderNotes(order.value?.notes || ""));
+const formattedPhone = computed(() => formatPhone(order.value?.client_phone || order.value?.phone_snapshot || ""));
+const documentLabel = computed(() => nonEmptyLabel(order.value?.client_document, "Sem cadastro"));
+const approvalLabel = computed(() => approvalStatusLabel(order.value?.approval_status));
+const addressLabel = computed(() => nonEmptyLabel(order.value?.client_address, "Sem cadastro"));
+const accessoriesLabel = computed(() => parsedNotes.value.accessories.length ? parsedNotes.value.accessories.join(", ") : "Não acompanha");
+const notesLabel = computed(() => nonEmptyLabel(parsedNotes.value.notes, "Sem"));
 const printSheetStyle = computed(() => {
  const preset = fontPresetMap[fontPreset.value];
  return {
@@ -356,11 +355,44 @@ function dateLabel(value: string | null | undefined) {
 }
 
 function dueDateLabel(value: string | null | undefined) {
- return value ? dateLabel(value) : "Sem previsão";
+ return value ? dateLabel(value) : "Exige avaliação";
 }
 
 function quoteLabel(value: number | null | undefined) {
  return value === null || value === undefined ? "Sem orçamento" : currency(value);
+}
+
+function nonEmptyLabel(value: string | null | undefined, fallback = "Não informado") {
+ const normalized = String(value || "").trim();
+ return normalized || fallback;
+}
+
+function formatPhone(value: string | null | undefined) {
+ const digits = String(value || "").replace(/\D/g, "");
+ if (!digits) {
+  return "Sem cadastro";
+ }
+ if (digits.length === 11) {
+  return `(${digits.slice(0, 2)}) ${digits.slice(2, 3)} ${digits.slice(3, 7)}-${digits.slice(7)}`;
+ }
+ if (digits.length === 10) {
+  return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+ }
+ return String(value || "").trim() || "Sem cadastro";
+}
+
+function approvalStatusLabel(value: string | null | undefined) {
+ const normalized = String(value || "").trim();
+ if (!normalized) {
+  return "Aguardando";
+ }
+ if (normalized === "AGUARDANDO_APROVACAO") {
+  return "Aguardando";
+ }
+ return normalized
+  .toLowerCase()
+  .replaceAll("_", " ")
+  .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function escapeHtml(value: unknown) {
@@ -422,26 +454,26 @@ function renderPrintCopyHtml(copyLabel: string, signatureLabel: string) {
      <div><strong>OS:</strong> ${escapeHtml(currentOrder.code)}</div>
      <div><strong>Abertura:</strong> ${escapeHtml(dateLabel(currentOrder.opened_at))}</div>
      <div><strong>Cliente:</strong> ${escapeHtml(currentOrder.client_name)}</div>
-     <div><strong>Telefone:</strong> ${escapeHtml(currentOrder.client_phone || currentOrder.phone_snapshot || "Não informado")}</div>
-     <div><strong>Documento:</strong> ${escapeHtml(currentOrder.client_document || "Não informado")}</div>
+     <div><strong>Telefone:</strong> ${escapeHtml(formatPhone(currentOrder.client_phone || currentOrder.phone_snapshot || ""))}</div>
+     <div><strong>Documento:</strong> ${escapeHtml(nonEmptyLabel(currentOrder.client_document, "Sem cadastro"))}</div>
      <div><strong>Previsão:</strong> ${escapeHtml(dueDateLabel(currentOrder.due_date))}</div>
      <div><strong>Status:</strong> ${escapeHtml(currentOrder.order_status)}</div>
-     <div><strong>Aprovação:</strong> ${escapeHtml(currentOrder.approval_status)}</div>
-     <div class="compact-grid__full"><strong>Endereço:</strong> ${escapeHtml(currentOrder.client_address || "Sem endereço")}</div>
+     <div><strong>Aprovação:</strong> ${escapeHtml(approvalStatusLabel(currentOrder.approval_status))}</div>
+     <div class="compact-grid__full"><strong>Endereço:</strong> ${escapeHtml(nonEmptyLabel(currentOrder.client_address, "Sem cadastro"))}</div>
     </div>
    </div>
    <div class="compact-block">
     <div class="compact-block__title">Equipamento e defeito</div>
     <div><strong>Equipamento:</strong> ${escapeHtml(currentOrder.equipment)}</div>
     <div><strong>Defeito:</strong> ${escapeHtml(currentOrder.defect)}</div>
-    <div><strong>Acessórios:</strong> ${escapeHtml(parsedNotes.value.accessories.length ? parsedNotes.value.accessories.join(", ") : "Nenhum acessório marcado")}</div>
+    <div><strong>Acessórios:</strong> ${escapeHtml(parsedNotes.value.accessories.length ? parsedNotes.value.accessories.join(", ") : "Não acompanha")}</div>
     ${
      parsedNotes.value.accessoriesOther
       ? `<div><strong>Outros:</strong> ${escapeHtml(parsedNotes.value.accessoriesOther)}</div>`
       : ""
     }
     <div><strong>Extras:</strong> ${escapeHtml(currentOrder.extras || "Sem extras informados")}</div>
-    <div><strong>Obs.:</strong> ${escapeHtml(parsedNotes.value.notes || "Sem observações")}</div>
+    <div><strong>Obs.:</strong> ${escapeHtml(nonEmptyLabel(parsedNotes.value.notes, "Sem"))}</div>
    </div>
    <div class="compact-block">
     <div class="compact-block__title">Itens da OS</div>
@@ -449,11 +481,8 @@ function renderPrintCopyHtml(copyLabel: string, signatureLabel: string) {
    </div>
    <div class="compact-footer">
     <div class="compact-totals">
-     <div><strong>Orçamento:</strong> ${escapeHtml(quoteLabel(currentOrder.quote_amount))}</div>
-     <div><strong>Serviços:</strong> ${escapeHtml(currency(currentOrder.service_amount))}</div>
-     <div><strong>Desconto:</strong> ${escapeHtml(currency(currentOrder.discount_amount))}</div>
-     <div><strong>Prazo base:</strong> ${escapeHtml(minutesLabel(currentOrder.estimated_total_minutes || 0))}</div>
-     <div class="compact-totals__final"><strong>Total final:</strong> ${escapeHtml(currency(currentOrder.total_amount))}</div>
+     <div class="compact-totals__final"><strong>Orçamento:</strong> ${escapeHtml(currency(currentOrder.total_amount))}</div>
+     <div class="compact-store-line">${escapeHtml(STORE_FULL_ADDRESS)} <strong>Contato:</strong> ${escapeHtml(STORE_PHONE)}</div>
     </div>
     <div class="compact-signature">
      <div class="compact-signature__line"></div>
@@ -482,15 +511,15 @@ async function printWindow() {
  }
 
  const preset = fontPresetMap[fontPreset.value];
- const copiesHtml = includeClientCopy.value
+  const copiesHtml = includeClientCopy.value
   ? `
    <div class="page-double">
-    ${renderPrintCopyHtml("Via da loja", "Assinatura da loja")}
+    ${renderPrintCopyHtml("Via da loja", "Assinatura do cliente")}
     <div class="page-divider"></div>
-    ${renderPrintCopyHtml("Via do cliente", "Assinatura do cliente")}
+    ${renderPrintCopyHtml("Via do cliente", "Assinatura da loja")}
    </div>
   `
-  : renderPrintCopyHtml("Via da loja", "Assinatura da loja");
+  : renderPrintCopyHtml("Via da loja", "Assinatura do cliente");
 
  popup.document.open();
  popup.document.write(`<!doctype html>
@@ -610,6 +639,11 @@ async function printWindow() {
  .compact-totals__final {
   grid-column: 1 / -1;
   font-weight: 700;
+ }
+ .compact-store-line {
+  grid-column: 1 / -1;
+  font-size: 9px;
+  line-height: 1.08;
  }
  .compact-signature {
   text-align: center;
@@ -765,6 +799,12 @@ onMounted(async () => {
  font-weight: 700;
 }
 
+.compact-store-line {
+ grid-column: 1 / -1;
+ font-size: 10.6px;
+ line-height: 1.14;
+}
+
 .compact-signature {
  text-align: center;
  font-size: 11px;
@@ -855,6 +895,11 @@ onMounted(async () => {
  .compact-grid,
  .compact-totals {
   gap: 1px 8px;
+ }
+
+ .compact-store-line {
+  font-size: 9px;
+  line-height: 1.08;
  }
 
  .compact-footer {

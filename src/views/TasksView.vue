@@ -80,52 +80,69 @@
         v-for="lane in laneColumns"
         :key="lane.key"
         class="tasks-lane panel-card"
+        :class="{ 'is-expanded': isLaneExpanded(lane.key) }"
         @dragover.prevent
         @drop="handleDrop(lane)">
-        <header class="tasks-lane__header">
+        <header class="tasks-lane__header" @click="toggleLane(lane.key)">
           <div>
             <div class="tasks-lane__eyebrow">{{ lane.eyebrow }}</div>
             <h3 class="tasks-lane__title">{{ lane.label }}</h3>
             <p class="tasks-lane__help">{{ lane.help }}</p>
           </div>
-          <span class="tasks-lane__count" :class="`is-${lane.tone}`">{{ lane.tasks.length }}</span>
+          <div class="tasks-lane__header-side">
+            <span class="tasks-lane__count" :class="`is-${lane.tone}`">{{ lane.tasks.length }}</span>
+            <button type="button" class="tasks-lane__toggle" :aria-expanded="isLaneExpanded(lane.key)">
+              <i class="fa-solid fa-chevron-down"></i>
+            </button>
+          </div>
         </header>
 
-        <div v-if="!lane.tasks.length" class="tasks-lane__empty">
-          Nenhuma tarefa nessa faixa agora.
-        </div>
+        <div v-if="isLaneExpanded(lane.key)" class="tasks-lane__body">
+          <div v-if="!lane.tasks.length" class="tasks-lane__empty">
+            Nenhuma tarefa nessa faixa agora.
+          </div>
 
-        <article
-          v-for="task in lane.tasks"
-          :key="task.id"
-          class="task-card"
-          draggable="true"
-          @dragstart="startDrag(task.id)"
-          @click="openTask(task.id)">
-          <div class="task-card__top">
-            <div class="task-card__heading">
-              <div class="task-card__title">{{ displayTaskName(task) }}</div>
-              <div class="task-card__service">{{ task.description || "Sem descrição informada." }}</div>
+          <article
+            v-for="task in lane.tasks"
+            :key="task.id"
+            class="task-card"
+            :class="{ 'is-expanded': isTaskExpanded(task.id) }"
+            draggable="true"
+            @dragstart="startDrag(task.id)"
+            @click.stop="handleTaskCardClick(task.id)">
+            <div class="task-card__compact-row">
+              <div class="task-card__compact-main">
+                <div class="task-card__title">{{ displayTaskName(task) }}</div>
+                <span class="task-card__compact-status">{{ task.legacy_status_label || lane.label }}</span>
+              </div>
+              <span v-if="task.order_code" class="task-card__order">{{ task.order_code }}</span>
             </div>
-            <span v-if="task.order_code" class="task-card__order">{{ task.order_code }}</span>
-          </div>
 
-          <div class="task-card__meta">
-            <span v-if="task.phone" class="task-card__chip"><i class="fa-solid fa-phone"></i>{{ task.phone }}</span>
-            <span v-if="task.device" class="task-card__chip"><i class="fa-solid fa-laptop"></i>{{ task.device }}</span>
-            <span v-if="taskValue(task)" class="task-card__chip"><i class="fa-solid fa-money-bill-wave"></i>{{ taskValue(task) }}</span>
-            <span v-if="task.responsible_name" class="task-card__chip"><i class="fa-solid fa-user"></i>{{ task.responsible_name }}</span>
-          </div>
+            <template v-if="isTaskExpanded(task.id)">
+              <div class="task-card__top">
+                <div class="task-card__heading">
+                  <div class="task-card__service">{{ task.description || "Sem descrição informada." }}</div>
+                </div>
+              </div>
 
-          <div v-if="task.notes" class="task-card__notes">
-            {{ task.notes }}
-          </div>
+              <div class="task-card__meta">
+                <span v-if="task.phone" class="task-card__chip"><i class="fa-solid fa-phone"></i>{{ task.phone }}</span>
+                <span v-if="task.device" class="task-card__chip"><i class="fa-solid fa-laptop"></i>{{ task.device }}</span>
+                <span v-if="taskValue(task)" class="task-card__chip"><i class="fa-solid fa-money-bill-wave"></i>{{ taskValue(task) }}</span>
+                <span v-if="task.responsible_name" class="task-card__chip"><i class="fa-solid fa-user"></i>{{ task.responsible_name }}</span>
+              </div>
 
-          <div class="task-card__footer">
-            <span class="task-card__queue">{{ lane.label }}</span>
-            <span class="task-card__status">{{ task.legacy_status_label || lane.help }}</span>
-          </div>
-        </article>
+              <div v-if="taskSummary(task)" class="task-card__notes">
+                {{ taskSummary(task) }}
+              </div>
+
+              <div class="task-card__footer">
+                <span class="task-card__queue">{{ lane.label }}</span>
+                <span class="task-card__status">{{ task.legacy_status_label || lane.help }}</span>
+              </div>
+            </template>
+          </article>
+        </div>
       </section>
     </div>
 
@@ -360,6 +377,9 @@ const showModal = ref(false);
 const taskUpdates = ref<DailyTaskUpdate[]>([]);
 const newUpdateMessage = ref("");
 const dragTaskId = ref<number | null>(null);
+const expandedLaneKeys = ref<string[]>([]);
+const expandedTaskIds = ref<number[]>([]);
+const activeModalTaskId = ref<number | null>(null);
 
 const taskForm = reactive(createEmptyTaskForm());
 
@@ -459,6 +479,51 @@ function taskValue(task: DailyTask) {
   return "";
 }
 
+function taskSummary(task: DailyTask) {
+  const parts = [task.description, task.notes].map((value) => normalizeLegacyText(value || "")).filter(Boolean);
+  const summary = parts.join(" • ");
+  if (!summary) {
+    return "";
+  }
+  return summary.length > 180 ? `${summary.slice(0, 177)}...` : summary;
+}
+
+function isLaneExpanded(laneKey: string) {
+  return expandedLaneKeys.value.includes(laneKey);
+}
+
+function toggleLane(laneKey: string) {
+  if (isLaneExpanded(laneKey)) {
+    expandedLaneKeys.value = expandedLaneKeys.value.filter((key) => key !== laneKey);
+    const laneTaskIds = laneColumns.value.find((lane) => lane.key === laneKey)?.tasks.map((task) => task.id) || [];
+    expandedTaskIds.value = expandedTaskIds.value.filter((taskId) => !laneTaskIds.includes(taskId));
+    return;
+  }
+  expandedLaneKeys.value = [...expandedLaneKeys.value, laneKey];
+}
+
+function isTaskExpanded(taskId: number) {
+  return expandedTaskIds.value.includes(taskId);
+}
+
+function collapseTask(taskId: number) {
+  expandedTaskIds.value = expandedTaskIds.value.filter((id) => id !== taskId);
+}
+
+function expandTask(taskId: number) {
+  if (!isTaskExpanded(taskId)) {
+    expandedTaskIds.value = [...expandedTaskIds.value, taskId];
+  }
+}
+
+function handleTaskCardClick(taskId: number) {
+  if (!isTaskExpanded(taskId)) {
+    expandTask(taskId);
+    return;
+  }
+  void openTask(taskId);
+}
+
 function buildTaskTitle() {
   const objective = normalizeLegacyText(taskForm.client_name);
   if (objective) {
@@ -498,6 +563,7 @@ function openCreateModal() {
 
 async function openTask(taskId: number) {
   try {
+    activeModalTaskId.value = taskId;
     const response = await api.task(taskId);
     Object.assign(taskForm, {
       ...createEmptyTaskForm(),
@@ -516,6 +582,7 @@ async function openTask(taskId: number) {
     newUpdateMessage.value = "";
     showModal.value = true;
   } catch (error) {
+    activeModalTaskId.value = null;
     await notifyError(error);
   }
 }
@@ -574,6 +641,7 @@ async function removeTaskRecord() {
   try {
     await api.deleteTask(Number(taskForm.id));
     showModal.value = false;
+    activeModalTaskId.value = null;
     await loadTasks();
     await notifySuccess("Tarefa excluída.");
   } catch (error) {
@@ -614,6 +682,15 @@ async function handleDrop(lane: LaneDefinition) {
 }
 
 watch(search, loadTasks);
+watch(showModal, (visible) => {
+  if (visible) {
+    return;
+  }
+  if (activeModalTaskId.value) {
+    collapseTask(activeModalTaskId.value);
+  }
+  activeModalTaskId.value = null;
+});
 
 onMounted(async () => {
   await Promise.all([loadTasks(), loadOrders()]);
@@ -734,7 +811,7 @@ onMounted(async () => {
   display: grid;
   gap: 0.9rem;
   align-content: start;
-  min-height: 420px;
+  min-height: 0;
 }
 
 .tasks-lane__header {
@@ -742,6 +819,38 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 1rem;
   align-items: start;
+  cursor: pointer;
+}
+
+.tasks-lane__header-side {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.tasks-lane__toggle {
+  width: 2.3rem;
+  height: 2.3rem;
+  border: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--surface-base) 76%, var(--surface-elevated));
+  color: var(--text-muted);
+  transition: transform 0.18s ease, background 0.18s ease, color 0.18s ease;
+  pointer-events: none;
+}
+
+.tasks-lane.is-expanded .tasks-lane__toggle {
+  transform: rotate(180deg);
+  background: color-mix(in srgb, var(--brand-primary) 12%, transparent);
+  color: var(--text-primary);
+}
+
+.tasks-lane__body {
+  display: grid;
+  gap: 0.7rem;
 }
 
 .tasks-lane__title {
@@ -809,8 +918,8 @@ onMounted(async () => {
 
 .task-card {
   display: grid;
-  gap: 0.7rem;
-  padding: 0.9rem;
+  gap: 0.65rem;
+  padding: 0.8rem 0.9rem;
   border-radius: 1rem;
   border: 1px solid var(--border-soft);
   background: color-mix(in srgb, var(--surface-elevated) 92%, transparent);
@@ -825,11 +934,32 @@ onMounted(async () => {
   box-shadow: 0 12px 28px color-mix(in srgb, var(--shadow-color) 70%, transparent);
 }
 
+.task-card__compact-row,
 .task-card__top {
   display: flex;
   justify-content: space-between;
   gap: 0.75rem;
-  align-items: start;
+  align-items: center;
+}
+
+.task-card__compact-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.task-card__compact-status {
+  flex: 0 0 auto;
+  max-width: 12rem;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-base) 70%, var(--surface-elevated));
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .task-card__heading {
@@ -840,12 +970,11 @@ onMounted(async () => {
 
 .task-card__title {
   font-weight: 800;
-  line-height: 1.25;
+  line-height: 1.2;
   color: var(--text-primary);
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .task-card__service {
@@ -914,6 +1043,10 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 0.45rem 0.75rem;
   font-size: 0.78rem;
+}
+
+.task-card:not(.is-expanded) .task-card__order {
+  padding-block: 0.18rem;
 }
 
 .task-card__queue {
@@ -994,6 +1127,10 @@ onMounted(async () => {
   .tasks-guide {
     grid-template-columns: 1fr;
   }
+
+  .tasks-board {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 767.98px) {
@@ -1003,6 +1140,15 @@ onMounted(async () => {
 
   .tasks-search {
     width: 100%;
+  }
+
+  .task-card__compact-main {
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .task-card__compact-status {
+    max-width: 100%;
   }
 }
 </style>
