@@ -3,7 +3,7 @@
  <div class="container-fluid">
   <div class="row min-vh-100 g-0">
   <aside class="col-lg-3 col-xl-2 p-0 sidebar-panel d-none d-lg-block">
-   <div class="d-flex flex-column h-100 p-4">
+   <div class="sidebar-panel__content d-flex flex-column h-100 p-4">
    <div class="mb-4">
     <div class="mb-3">
     <div class="brand-logo-shell brand-logo-shell--menu">
@@ -44,6 +44,18 @@
     <div class="fw-semibold">{{ session.user?.name }}</div>
     <div class="text-white-50 small">{{ session.company?.shortName }}</div>
     <div class="text-white-50 small mb-3">{{ session.store?.shortName || session.store?.name }}</div>
+    <button class="sidebar-profile-switch mb-2" type="button" @click="openProfilePicker">
+     <span
+      class="sidebar-profile-switch__avatar"
+      :style="{ background: session.user?.avatarColor || '#10233f' }">
+      {{ session.user?.avatarInitial || session.user?.name?.slice(0, 1)?.toUpperCase() }}
+     </span>
+     <span class="sidebar-profile-switch__copy">
+      <span class="sidebar-profile-switch__label">Trocar perfil</span>
+      <span class="sidebar-profile-switch__meta">Selecionar outra conta</span>
+     </span>
+     <i class="fa-solid fa-repeat ms-auto"></i>
+    </button>
     <button class="btn btn-outline-light btn-sm rounded-pill w-100" @click="handleLogout">
      <i class="fa-solid fa-right-from-bracket me-2"></i>
      Sair da empresa
@@ -120,19 +132,9 @@
    </div>
 
    <slot />
-  </main>
+ </main>
   </div>
  </div>
-
- <button type="button" class="quick-profile-switch" @click="showProfiles = true">
-  <span
-  class="quick-profile-switch__avatar"
-  :style="{ background: session.user?.avatarColor || '#10233f' }">
-  {{ session.user?.avatarInitial || session.user?.name?.slice(0, 1)?.toUpperCase() }}
-  </span>
-  <span class="quick-profile-switch__label">Trocar perfil</span>
-  <i class="fa-solid fa-repeat"></i>
- </button>
 
  <div
   v-if="showProfiles"
@@ -214,6 +216,10 @@
    <div class="fw-semibold">{{ session.user?.name }}</div>
    <div class="small">{{ session.company?.shortName }}</div>
    </div>
+   <button class="btn btn-outline-secondary rounded-pill d-inline-flex align-items-center gap-2" @click="openProfilePickerFromNav">
+   <i class="fa-solid fa-repeat"></i>
+   Trocar perfil
+   </button>
    <button class="btn btn-outline-secondary rounded-pill" @click="handleLogout">
    <i class="fa-solid fa-right-from-bracket me-2"></i>
    Sair da empresa
@@ -259,7 +265,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { useNotificationsStore } from "../stores/notifications";
 import { useSessionStore } from "../stores/session";
@@ -281,6 +287,7 @@ const mobileNavPanel = ref<HTMLElement | null>(null);
 const showProfiles = ref(false);
 let notificationsInstance: any = null;
 let mobileNavInstance: any = null;
+let profilePickerTimer: number | null = null;
 
 const groupedSections = {
  finance: {
@@ -366,6 +373,21 @@ async function handleLogout() {
  router.push("/login");
 }
 
+function openProfilePicker() {
+ showProfiles.value = true;
+}
+
+function openProfilePickerFromNav() {
+ closeMobileNav();
+ if (profilePickerTimer) {
+ window.clearTimeout(profilePickerTimer);
+ }
+ profilePickerTimer = window.setTimeout(() => {
+ showProfiles.value = true;
+ profilePickerTimer = null;
+ }, 180);
+}
+
 function openNotifications() {
  notificationsInstance?.show?.();
 }
@@ -425,6 +447,12 @@ onMounted(async () => {
   .map((item) => `<div class='text-start'><strong>${item.title}</strong><br/><span>${item.message}</span></div>`)
   .join("<hr class='my-2'/>")
  });
+ }
+});
+
+onBeforeUnmount(() => {
+ if (profilePickerTimer) {
+ window.clearTimeout(profilePickerTimer);
  }
 });
 </script>
