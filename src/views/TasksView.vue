@@ -16,27 +16,32 @@
       </div>
     </template>
 
-    <section class="tasks-guide panel-card">
-      <div class="tasks-guide__copy">
-        <div class="tasks-guide__eyebrow">Importação oficial</div>
-        <h2 class="tasks-guide__title">A coluna A é a guia da operação.</h2>
-        <p class="tasks-guide__text">
-          Cada tarefa entra pela aba <strong>Atual</strong> da <strong>tarefas.ods</strong> e é organizada por prazo
-          ou fase real do serviço: hoje, próximos dias, pronto, cliente avisado, entregue ou pendência do Dênio.
+    <section class="tasks-hero panel-card">
+      <div class="tasks-hero__copy">
+        <div class="tasks-hero__eyebrow">Importação oficial</div>
+        <h2 class="tasks-hero__title">Uma fila, dois momentos: trabalho ativo e fechamento.</h2>
+        <p class="tasks-hero__text">
+          A aba <strong>Atual</strong> da <strong>tarefas.ods</strong> entra aqui sem ruído. As faixas urgentes ficam
+          separadas das faixas de conclusão para você bater o olho e agir mais rápido.
         </p>
       </div>
-      <div class="tasks-guide__legend">
-        <div v-for="lane in visibleLaneDefinitions" :key="lane.key" class="tasks-guide__legend-item">
-          <span class="tasks-guide__legend-dot" :class="`is-${lane.tone}`"></span>
-          <div>
-            <div class="tasks-guide__legend-label">{{ lane.label }}</div>
-            <div class="tasks-guide__legend-help">{{ lane.help }}</div>
-          </div>
+      <div class="tasks-hero__tips">
+        <div class="tasks-hero__tip">
+          <i class="fa-solid fa-hand-pointer"></i>
+          Clique uma vez para expandir, clique de novo para editar.
+        </div>
+        <div class="tasks-hero__tip">
+          <i class="fa-solid fa-arrow-right-arrow-left"></i>
+          Arraste um cartão para mudar a faixa.
+        </div>
+        <div class="tasks-hero__tip">
+          <i class="fa-solid fa-filter"></i>
+          Use a busca para reduzir o volume antes de abrir detalhes.
         </div>
       </div>
     </section>
 
-    <div class="row g-4 mb-4">
+    <div class="row g-4 mb-4 tasks-metrics">
       <div class="col-md-6 col-xl-3">
         <MetricCard
           title="Total da agenda"
@@ -75,73 +80,181 @@
       </div>
     </div>
 
-    <div class="tasks-board">
-      <section
-        v-for="lane in laneColumns"
-        :key="lane.key"
-        class="tasks-lane panel-card"
-        :class="{ 'is-expanded': isLaneExpanded(lane.key) }"
-        @dragover.prevent
-        @drop="handleDrop(lane)">
-        <header class="tasks-lane__header" @click="toggleLane(lane.key)">
-          <div>
-            <div class="tasks-lane__eyebrow">{{ lane.eyebrow }}</div>
-            <h3 class="tasks-lane__title">{{ lane.label }}</h3>
-            <p class="tasks-lane__help">{{ lane.help }}</p>
+    <div class="tasks-board-sections">
+      <section class="tasks-board-group">
+        <div class="tasks-board-group__header">
+          <div class="tasks-board-group__copy">
+            <div class="tasks-board-group__eyebrow">Trabalho ativo</div>
+            <h3 class="tasks-board-group__title">O que exige decisão hoje</h3>
+            <p class="tasks-board-group__text">
+              Prioriza urgência e fila aberta. Aqui entram as tarefas que precisam de movimento antes do fechamento.
+            </p>
           </div>
-          <div class="tasks-lane__header-side">
-            <span class="tasks-lane__count" :class="`is-${lane.tone}`">{{ lane.tasks.length }}</span>
-            <button type="button" class="tasks-lane__toggle" :aria-expanded="isLaneExpanded(lane.key)">
-              <i class="fa-solid fa-chevron-down"></i>
-            </button>
+          <div class="tasks-board-group__meta">
+            <span class="tasks-board-group__meta-pill">Hoje {{ laneCount("today") }}</span>
+            <span class="tasks-board-group__meta-pill">1 dia {{ laneCount("next-day") }}</span>
+            <span class="tasks-board-group__meta-pill">3 a 7 dias {{ laneCount("three-to-seven") }}</span>
           </div>
-        </header>
-
-        <div v-if="isLaneExpanded(lane.key)" class="tasks-lane__body">
-          <div v-if="!lane.tasks.length" class="tasks-lane__empty">
-            Nenhuma tarefa nessa faixa agora.
-          </div>
-
-          <article
-            v-for="task in lane.tasks"
-            :key="task.id"
-            class="task-card"
-            :class="{ 'is-expanded': isTaskExpanded(task.id) }"
-            draggable="true"
-            @dragstart="startDrag(task.id)"
-            @click.stop="handleTaskCardClick(task.id)">
-            <div class="task-card__compact-row">
-              <div class="task-card__compact-main">
-                <div class="task-card__title">{{ displayTaskName(task) }}</div>
-                <span class="task-card__compact-status">{{ task.legacy_status_label || lane.label }}</span>
+        </div>
+        <div class="tasks-board">
+          <section
+            v-for="lane in activeLaneColumns"
+            :key="lane.key"
+            class="tasks-lane panel-card"
+            :class="{ 'is-expanded': isLaneExpanded(lane.key) }"
+            @dragover.prevent
+            @drop="handleDrop(lane)">
+            <header class="tasks-lane__header" @click="toggleLane(lane.key)">
+              <div>
+                <div class="tasks-lane__eyebrow">{{ lane.eyebrow }}</div>
+                <h4 class="tasks-lane__title">{{ lane.label }}</h4>
+                <p class="tasks-lane__help">{{ lane.help }}</p>
               </div>
-              <span v-if="task.order_code" class="task-card__order">{{ task.order_code }}</span>
-            </div>
+              <div class="tasks-lane__header-side">
+                <span class="tasks-lane__count" :class="`is-${lane.tone}`">{{ lane.tasks.length }}</span>
+                <button type="button" class="tasks-lane__toggle" :aria-expanded="isLaneExpanded(lane.key)">
+                  <i class="fa-solid fa-chevron-down"></i>
+                </button>
+              </div>
+            </header>
 
-            <template v-if="isTaskExpanded(task.id)">
-              <div class="task-card__top">
-                <div class="task-card__heading">
-                  <div class="task-card__service">{{ task.description || "Sem descrição informada." }}</div>
+            <div v-if="isLaneExpanded(lane.key)" class="tasks-lane__body">
+              <div v-if="!lane.tasks.length" class="tasks-lane__empty">
+                Nenhuma tarefa nessa faixa agora.
+              </div>
+
+              <article
+                v-for="task in lane.tasks"
+                :key="task.id"
+                class="task-card"
+                :class="{ 'is-expanded': isTaskExpanded(task.id) }"
+                draggable="true"
+                @dragstart="startDrag(task.id)"
+                @click.stop="handleTaskCardClick(task.id)">
+                <div class="task-card__compact-row">
+                  <div class="task-card__compact-main">
+                    <div class="task-card__title">{{ displayTaskName(task) }}</div>
+                    <span class="task-card__compact-status">{{ task.legacy_status_label || lane.label }}</span>
+                  </div>
+                  <span v-if="task.order_code" class="task-card__order">{{ task.order_code }}</span>
                 </div>
+
+                <template v-if="isTaskExpanded(task.id)">
+                  <div class="task-card__top">
+                    <div class="task-card__heading">
+                      <div class="task-card__service">{{ task.description || "Sem descrição informada." }}</div>
+                    </div>
+                  </div>
+
+                  <div class="task-card__meta">
+                    <span v-if="task.phone" class="task-card__chip"><i class="fa-solid fa-phone"></i>{{ task.phone }}</span>
+                    <span v-if="task.device" class="task-card__chip"><i class="fa-solid fa-laptop"></i>{{ task.device }}</span>
+                    <span v-if="taskValue(task)" class="task-card__chip"><i class="fa-solid fa-money-bill-wave"></i>{{ taskValue(task) }}</span>
+                    <span v-if="task.responsible_name" class="task-card__chip"><i class="fa-solid fa-user"></i>{{ task.responsible_name }}</span>
+                  </div>
+
+                  <div v-if="taskSummary(task)" class="task-card__notes">
+                    {{ taskSummary(task) }}
+                  </div>
+
+                  <div class="task-card__footer">
+                    <span class="task-card__queue">{{ lane.label }}</span>
+                    <span class="task-card__status">{{ task.legacy_status_label || lane.help }}</span>
+                  </div>
+                </template>
+              </article>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="tasks-board-group tasks-board-group--secondary">
+        <div class="tasks-board-group__header">
+          <div class="tasks-board-group__copy">
+            <div class="tasks-board-group__eyebrow">Fechamento</div>
+            <h3 class="tasks-board-group__title">O que já passou pela bancada</h3>
+            <p class="tasks-board-group__text">
+              Faz a leitura do andamento final sem misturar com o fluxo do dia. É a visão para dar baixa e acompanhar
+              pendências de entrega.
+            </p>
+          </div>
+          <div class="tasks-board-group__meta">
+            <span class="tasks-board-group__meta-pill">Pronto {{ laneCount("ready") }}</span>
+            <span class="tasks-board-group__meta-pill">Aguardando {{ laneCount("notified") }}</span>
+            <span class="tasks-board-group__meta-pill">Entregue {{ laneCount("delivered") }}</span>
+            <span class="tasks-board-group__meta-pill">Dênio {{ laneCount("denio") }}</span>
+          </div>
+        </div>
+
+        <div class="tasks-board">
+          <section
+            v-for="lane in closedLaneColumns"
+            :key="lane.key"
+            class="tasks-lane panel-card"
+            :class="{ 'is-expanded': isLaneExpanded(lane.key) }"
+            @dragover.prevent
+            @drop="handleDrop(lane)">
+            <header class="tasks-lane__header" @click="toggleLane(lane.key)">
+              <div>
+                <div class="tasks-lane__eyebrow">{{ lane.eyebrow }}</div>
+                <h4 class="tasks-lane__title">{{ lane.label }}</h4>
+                <p class="tasks-lane__help">{{ lane.help }}</p>
+              </div>
+              <div class="tasks-lane__header-side">
+                <span class="tasks-lane__count" :class="`is-${lane.tone}`">{{ lane.tasks.length }}</span>
+                <button type="button" class="tasks-lane__toggle" :aria-expanded="isLaneExpanded(lane.key)">
+                  <i class="fa-solid fa-chevron-down"></i>
+                </button>
+              </div>
+            </header>
+
+            <div v-if="isLaneExpanded(lane.key)" class="tasks-lane__body">
+              <div v-if="!lane.tasks.length" class="tasks-lane__empty">
+                Nenhuma tarefa nessa faixa agora.
               </div>
 
-              <div class="task-card__meta">
-                <span v-if="task.phone" class="task-card__chip"><i class="fa-solid fa-phone"></i>{{ task.phone }}</span>
-                <span v-if="task.device" class="task-card__chip"><i class="fa-solid fa-laptop"></i>{{ task.device }}</span>
-                <span v-if="taskValue(task)" class="task-card__chip"><i class="fa-solid fa-money-bill-wave"></i>{{ taskValue(task) }}</span>
-                <span v-if="task.responsible_name" class="task-card__chip"><i class="fa-solid fa-user"></i>{{ task.responsible_name }}</span>
-              </div>
+              <article
+                v-for="task in lane.tasks"
+                :key="task.id"
+                class="task-card"
+                :class="{ 'is-expanded': isTaskExpanded(task.id) }"
+                draggable="true"
+                @dragstart="startDrag(task.id)"
+                @click.stop="handleTaskCardClick(task.id)">
+                <div class="task-card__compact-row">
+                  <div class="task-card__compact-main">
+                    <div class="task-card__title">{{ displayTaskName(task) }}</div>
+                    <span class="task-card__compact-status">{{ task.legacy_status_label || lane.label }}</span>
+                  </div>
+                  <span v-if="task.order_code" class="task-card__order">{{ task.order_code }}</span>
+                </div>
 
-              <div v-if="taskSummary(task)" class="task-card__notes">
-                {{ taskSummary(task) }}
-              </div>
+                <template v-if="isTaskExpanded(task.id)">
+                  <div class="task-card__top">
+                    <div class="task-card__heading">
+                      <div class="task-card__service">{{ task.description || "Sem descrição informada." }}</div>
+                    </div>
+                  </div>
 
-              <div class="task-card__footer">
-                <span class="task-card__queue">{{ lane.label }}</span>
-                <span class="task-card__status">{{ task.legacy_status_label || lane.help }}</span>
-              </div>
-            </template>
-          </article>
+                  <div class="task-card__meta">
+                    <span v-if="task.phone" class="task-card__chip"><i class="fa-solid fa-phone"></i>{{ task.phone }}</span>
+                    <span v-if="task.device" class="task-card__chip"><i class="fa-solid fa-laptop"></i>{{ task.device }}</span>
+                    <span v-if="taskValue(task)" class="task-card__chip"><i class="fa-solid fa-money-bill-wave"></i>{{ taskValue(task) }}</span>
+                    <span v-if="task.responsible_name" class="task-card__chip"><i class="fa-solid fa-user"></i>{{ task.responsible_name }}</span>
+                  </div>
+
+                  <div v-if="taskSummary(task)" class="task-card__notes">
+                    {{ taskSummary(task) }}
+                  </div>
+
+                  <div class="task-card__footer">
+                    <span class="task-card__queue">{{ lane.label }}</span>
+                    <span class="task-card__status">{{ task.legacy_status_label || lane.help }}</span>
+                  </div>
+                </template>
+              </article>
+            </div>
+          </section>
         </div>
       </section>
     </div>
@@ -383,13 +496,18 @@ const activeModalTaskId = ref<number | null>(null);
 
 const taskForm = reactive(createEmptyTaskForm());
 
-const visibleLaneDefinitions = computed(() => LANE_DEFINITIONS.filter((lane) => lane.key !== "unguided"));
 const editableLaneDefinitions = computed(() => LANE_DEFINITIONS.filter((lane) => lane.input));
 const laneColumns = computed(() =>
   LANE_DEFINITIONS.map((lane) => ({
     ...lane,
     tasks: tasks.value.filter((task) => resolveLane(task.legacy_queue_code).key === lane.key)
   }))
+);
+const activeLaneColumns = computed(() =>
+  laneColumns.value.filter((lane) => ["today", "next-day", "three-to-seven", "unguided"].includes(lane.key))
+);
+const closedLaneColumns = computed(() =>
+  laneColumns.value.filter((lane) => ["ready", "notified", "delivered", "denio"].includes(lane.key))
 );
 const resolvedLane = computed(() => resolveLane(taskForm.legacy_queue_code));
 
@@ -694,6 +812,9 @@ watch(showModal, (visible) => {
 
 onMounted(async () => {
   await Promise.all([loadTasks(), loadOrders()]);
+  if (!expandedLaneKeys.value.length) {
+    expandedLaneKeys.value = ["today", "next-day", "ready"];
+  }
 });
 </script>
 
@@ -709,20 +830,22 @@ onMounted(async () => {
   width: min(420px, 100%);
 }
 
-.tasks-guide {
+.tasks-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.9fr);
+  gap: 1.25rem;
+  align-items: start;
   margin-bottom: 1.5rem;
 }
 
-.tasks-guide__copy,
-.tasks-guide__legend {
+.tasks-hero__copy,
+.tasks-hero__tips {
   display: grid;
-  gap: 0.9rem;
+  gap: 0.85rem;
 }
 
-.tasks-guide__eyebrow,
+.tasks-hero__eyebrow,
+.tasks-board-group__eyebrow,
 .tasks-lane__eyebrow,
 .tasks-history__eyebrow {
   font-size: 0.72rem;
@@ -732,7 +855,8 @@ onMounted(async () => {
   color: var(--text-muted);
 }
 
-.tasks-guide__title,
+.tasks-hero__title,
+.tasks-board-group__title,
 .tasks-history__title {
   margin: 0;
   font-size: 1.35rem;
@@ -740,71 +864,98 @@ onMounted(async () => {
   color: var(--text-primary);
 }
 
-.tasks-guide__text {
+.tasks-hero__text,
+.tasks-board-group__text {
   margin: 0;
   max-width: 60rem;
   color: var(--text-muted);
   line-height: 1.6;
 }
 
-.tasks-guide__legend-item {
-  display: grid;
-  grid-template-columns: 14px 1fr;
-  gap: 0.85rem;
-  align-items: start;
+.tasks-hero__tips {
+  padding: 1rem;
+  border-radius: 1.25rem;
+  border: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--surface-base) 72%, var(--surface-elevated));
 }
 
-.tasks-guide__legend-dot {
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  margin-top: 0.3rem;
-  background: color-mix(in srgb, var(--brand-primary) 20%, transparent);
-}
-
-.tasks-guide__legend-dot.is-danger {
-  background: #d95165;
-}
-
-.tasks-guide__legend-dot.is-warning {
-  background: #e6ad39;
-}
-
-.tasks-guide__legend-dot.is-info {
-  background: #31c4d5;
-}
-
-.tasks-guide__legend-dot.is-primary {
-  background: #2f6fd6;
-}
-
-.tasks-guide__legend-dot.is-secondary {
-  background: #71839f;
-}
-
-.tasks-guide__legend-dot.is-success {
-  background: #169873;
-}
-
-.tasks-guide__legend-dot.is-dark {
-  background: #10233f;
-}
-
-.tasks-guide__legend-label {
-  font-weight: 800;
+.tasks-hero__tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.9rem 1rem;
+  border-radius: 1rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-soft);
   color: var(--text-primary);
+  line-height: 1.45;
 }
 
-.tasks-guide__legend-help,
-.tasks-lane__help {
+.tasks-hero__tip i {
+  flex: 0 0 auto;
+  color: var(--brand-primary);
+  margin-top: 0.15rem;
+}
+
+.tasks-metrics {
+  --bs-gutter-x: 1rem;
+  --bs-gutter-y: 1rem;
+}
+
+.tasks-board-sections {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.tasks-board-group {
+  display: grid;
+  gap: 1rem;
+}
+
+.tasks-board-group__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.tasks-board-group__copy {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.tasks-board-group__meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.tasks-board-group__meta-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.34rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--surface-elevated) 84%, var(--surface-base));
   color: var(--text-muted);
-  line-height: 1.5;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.tasks-board-group--secondary .tasks-board-group__meta-pill {
+  background: color-mix(in srgb, var(--surface-base) 76%, var(--surface-elevated));
 }
 
 .tasks-board {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1rem;
+}
+
+.tasks-lane__help {
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
 .tasks-lane {
@@ -855,15 +1006,15 @@ onMounted(async () => {
 
 .tasks-lane__title {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 1rem;
   font-weight: 800;
   color: var(--text-primary);
 }
 
 .tasks-lane__count {
-  min-width: 2.3rem;
-  height: 2.3rem;
-  padding: 0 0.75rem;
+  min-width: 2.15rem;
+  height: 2.15rem;
+  padding: 0 0.65rem;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
@@ -919,19 +1070,61 @@ onMounted(async () => {
 .task-card {
   display: grid;
   gap: 0.65rem;
-  padding: 0.8rem 0.9rem;
+  padding: 0.78rem 0.86rem;
   border-radius: 1rem;
   border: 1px solid var(--border-soft);
-  background: color-mix(in srgb, var(--surface-elevated) 92%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-elevated) 94%, transparent), color-mix(in srgb, var(--surface-base) 14%, transparent));
   cursor: pointer;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
   overflow: hidden;
+  position: relative;
 }
 
 .task-card:hover {
   transform: translateY(-2px);
   border-color: color-mix(in srgb, var(--brand-primary) 28%, var(--border-soft));
   box-shadow: 0 12px 28px color-mix(in srgb, var(--shadow-color) 70%, transparent);
+}
+
+.task-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0.28rem;
+  background: color-mix(in srgb, var(--brand-primary) 18%, transparent);
+}
+
+.tasks-lane:nth-child(1) .task-card::before {
+  background: #d95165;
+}
+
+.tasks-lane:nth-child(2) .task-card::before {
+  background: #e6ad39;
+}
+
+.tasks-lane:nth-child(3) .task-card::before {
+  background: #31c4d5;
+}
+
+.tasks-lane:nth-child(4) .task-card::before {
+  background: #71839f;
+}
+
+.tasks-board-group--secondary .tasks-lane:nth-child(1) .task-card::before {
+  background: #2f6fd6;
+}
+
+.tasks-board-group--secondary .tasks-lane:nth-child(2) .task-card::before {
+  background: #71839f;
+}
+
+.tasks-board-group--secondary .tasks-lane:nth-child(3) .task-card::before {
+  background: #169873;
+}
+
+.tasks-board-group--secondary .tasks-lane:nth-child(4) .task-card::before {
+  background: #10233f;
 }
 
 .task-card__compact-row,
@@ -1088,7 +1281,6 @@ onMounted(async () => {
   color: var(--text-muted);
 }
 
-:global(:root[data-theme="dark"]) .tasks-guide__legend-dot.is-dark,
 :global(:root[data-theme="dark"]) .tasks-lane__count.is-dark {
   background: #dce7f8;
   color: #09111d;
@@ -1124,12 +1316,20 @@ onMounted(async () => {
 }
 
 @media (max-width: 991.98px) {
-  .tasks-guide {
+  .tasks-hero {
     grid-template-columns: 1fr;
   }
 
   .tasks-board {
     grid-template-columns: 1fr;
+  }
+
+  .tasks-board-group__header {
+    display: grid;
+  }
+
+  .tasks-board-group__meta {
+    justify-content: flex-start;
   }
 }
 

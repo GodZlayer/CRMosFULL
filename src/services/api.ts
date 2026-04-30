@@ -607,8 +607,14 @@ export const api = {
     }
     return {
       blob: await response.blob(),
-      fileName: response.headers.get("Content-Disposition")?.match(/filename=\"?([^"]+)\"?/)?.[1] || "exportacao.ods"
+      fileName: response.headers.get("Content-Disposition")?.match(/filename=\"?([^"]+)\"?/)?.[1] || "backup-crm.ods"
     };
+  },
+  importOperationalOds(payload: Record<string, unknown>) {
+    return request<{ data: Record<string, unknown> }>("/api/system-transfer/import/ods", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
   },
   importFromMysql(payload: Record<string, unknown>) {
     return request<{ data: MysqlImportResult }>("/api/system-transfer/import/mysql", {
@@ -629,5 +635,3 @@ export const api = {
     return request<{ data: LegacyImportSummary[] }>(`/api/legacy-import-rows/summary${toQuery(filters)}`);
   }
 };
-
-

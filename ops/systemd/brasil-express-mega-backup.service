@@ -11,5 +11,7 @@ Environment=PROJECT_ROOT=/home/loja/Documentos/BrasilExpressCRMinterno
 Environment=BACKUP_ROOT=/home/loja/backups/brasil-express-crm
 Environment=MEGA_REMOTE_DIR=/Root/BrasilExpressCRM/backups
 Environment=LOCAL_RETENTION_DAYS=7
+Nice=19
+IOSchedulingClass=idle
+IOSchedulingPriority=7
 ExecStart=/usr/bin/env bash /home/loja/Documentos/BrasilExpressCRMinterno/scripts/backup-storage-to-mega.sh
-

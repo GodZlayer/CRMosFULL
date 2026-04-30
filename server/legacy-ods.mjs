@@ -139,8 +139,7 @@ function parseTableRows(tableXml = "") {
   return rows;
 }
 
-export function parseOdsFile(filePath) {
-  const buffer = readFileSync(filePath);
+export function parseOdsBuffer(buffer) {
   const contentXml = extractZipEntry(buffer, "content.xml").toString("utf8");
   const sheets = [];
   const tableRegex = /<table:table\b([^>]*)>([\s\S]*?)<\/table:table>/g;
@@ -157,6 +156,11 @@ export function parseOdsFile(filePath) {
   }
 
   return { sheets };
+}
+
+export function parseOdsFile(filePath) {
+  const buffer = readFileSync(filePath);
+  return parseOdsBuffer(buffer);
 }
 
 export function normalizeLegacyText(value = "") {

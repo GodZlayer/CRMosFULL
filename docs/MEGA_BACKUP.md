@@ -58,12 +58,12 @@ sudo systemctl list-timers brasil-express-mega-backup.timer
 
 ## Frequencia
 
-O timer atual roda a cada 6 horas:
+O timer atual roda uma vez por dia em horario de menor impacto:
 
-- 00:00
-- 06:00
-- 12:00
-- 18:00
+- 03:15
+- com atraso aleatorio de ate 30 minutos para evitar picos simultaneos
+
+O service tambem executa com prioridade baixa de CPU e disco para reduzir impacto no computador local.
 
 ## Variaveis uteis
 

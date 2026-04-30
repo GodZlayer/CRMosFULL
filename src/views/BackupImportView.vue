@@ -1,7 +1,7 @@
 <template>
   <AppShell
     title="Backup e importação"
-    subtitle="Operação de dados do CRM com backup para MySQL, restore de MySQL e importação das planilhas-base por link público.">
+    subtitle="Backup e restauração do CRM em um único arquivo ODS, sem depender de MySQL ou links externos.">
     <div class="row g-4 mb-4">
       <div class="col-md-6 col-xl-4">
         <div class="panel-card h-100">
@@ -54,75 +54,26 @@
       <div class="col-12 col-xl-6">
         <section class="panel-card h-100 d-grid gap-4">
           <div>
-            <div class="small fw-semibold mb-2">Conexão MySQL</div>
-            <h2 class="h4 fw-bold mb-1">Backup e restore</h2>
+            <div class="small fw-semibold mb-2">Backup completo</div>
+            <h2 class="h4 fw-bold mb-1">Exportar base inteira em ODS</h2>
             <p class="mb-0">
-              Use a mesma conexão para enviar backup do CRM, baixar dump MySQL ou restaurar uma base já existente.
+              Gera um arquivo `.ods` com todas as tabelas portáveis do CRM para servir como backup e restore no mesmo formato.
             </p>
           </div>
 
-          <div class="row g-3">
-            <div class="col-md-7">
-              <label class="form-label fw-semibold">Host <span class="text-danger">*</span></label>
-              <input v-model="mysqlForm.host" class="form-control rounded-4" placeholder="127.0.0.1 ou mysql.seudominio.com" />
-            </div>
-            <div class="col-md-5">
-              <label class="form-label fw-semibold">Porta <span class="text-danger">*</span></label>
-              <input v-model.number="mysqlForm.port" type="number" class="form-control rounded-4" placeholder="3306" />
-            </div>
-            <div class="col-md-6">
-              <label class="form-label fw-semibold">Usuário <span class="text-danger">*</span></label>
-              <input v-model="mysqlForm.user" class="form-control rounded-4" placeholder="root" />
-            </div>
-            <div class="col-md-6">
-              <label class="form-label fw-semibold">Senha</label>
-              <input v-model="mysqlForm.password" type="password" class="form-control rounded-4" placeholder="Senha do MySQL" />
-              <div class="form-text">Se deixar em branco, o servidor usa a senha padrão configurada.</div>
-            </div>
-            <div class="col-12">
-              <label class="form-label fw-semibold">Banco MySQL <span class="text-danger">*</span></label>
-              <input v-model="mysqlForm.database" class="form-control rounded-4" placeholder="crm_backup" />
-            </div>
+          <div class="panel-card bg-body-tertiary border-0">
+            <div class="small fw-semibold mb-2">O que entra no arquivo</div>
+            <ul class="mb-0 ps-3">
+              <li>Tabelas de clientes, estoque, financeiro, OS, PDV, tarefas, auditoria e cadastros</li>
+              <li>As tabelas transitórias de sessão ficam de fora</li>
+              <li>O arquivo exportado é o mesmo que a importação entende</li>
+            </ul>
           </div>
 
-          <div class="d-grid gap-3">
-            <div class="form-check form-switch">
-              <input id="mysql-replace-existing" v-model="mysqlForm.replaceExisting" class="form-check-input" type="checkbox" />
-              <label class="form-check-label" for="mysql-replace-existing">
-                Substituir tabelas existentes no backup MySQL
-              </label>
-            </div>
-
-            <div class="d-flex flex-wrap gap-2">
-              <button class="btn btn-primary rounded-pill" :disabled="busy.mysqlBackup" @click="runMysqlBackup">
-                <i class="fa-solid fa-cloud-arrow-up me-2"></i>
-                {{ busy.mysqlBackup ? "Enviando backup..." : "Enviar backup ao MySQL" }}
-              </button>
-              <button class="btn btn-outline-secondary rounded-pill" :disabled="busy.mysqlDump" @click="downloadMysqlDump">
-                <i class="fa-solid fa-download me-2"></i>
-                {{ busy.mysqlDump ? "Gerando dump..." : "Baixar dump MySQL" }}
-              </button>
-            </div>
-          </div>
-
-          <div class="border-top pt-4 d-grid gap-3">
-            <div>
-              <div class="small fw-semibold mb-2">Restore</div>
-              <div>
-                Importa uma base do MySQL para o CRM atual. Use com cuidado, porque isso pode sobrescrever os dados atuais.
-              </div>
-            </div>
-
-            <div class="form-check form-switch">
-              <input id="mysql-clear-existing" v-model="mysqlForm.clearExisting" class="form-check-input" type="checkbox" />
-              <label class="form-check-label" for="mysql-clear-existing">
-                Limpar tabelas locais antes de importar
-              </label>
-            </div>
-
-            <button class="btn btn-outline-warning rounded-pill" :disabled="busy.mysqlImport" @click="runMysqlImport">
-              <i class="fa-solid fa-database me-2"></i>
-              {{ busy.mysqlImport ? "Importando..." : "Importar banco MySQL" }}
+          <div class="d-flex flex-wrap gap-2">
+            <button class="btn btn-outline-success rounded-pill" :disabled="busy.odsExport" @click="downloadOperationalOds">
+              <i class="fa-solid fa-file-arrow-down me-2"></i>
+              {{ busy.odsExport ? "Gerando backup..." : "Exportar backup ODS" }}
             </button>
           </div>
         </section>
@@ -131,54 +82,34 @@
       <div class="col-12 col-xl-6">
         <section class="panel-card h-100 d-grid gap-4">
           <div>
-            <div class="small fw-semibold mb-2">Planilhas base</div>
-            <h2 class="h4 fw-bold mb-1">Importação por link público</h2>
+            <div class="small fw-semibold mb-2">Restauração</div>
+            <h2 class="h4 fw-bold mb-1">Importar e substituir a base</h2>
             <p class="mb-0">
-              Aceita link público do Google Sheets ou URL direta `.ods`. O sistema converte links do Google Docs para exportação ODS.
+              Selecione um backup `.ods` exportado por este mesmo sistema. A importação substitui os dados atuais.
             </p>
           </div>
 
           <div class="d-grid gap-3">
             <div>
-              <label class="form-label fw-semibold">Link da planilha Serviços 2026 <span class="text-danger">*</span></label>
-              <input
-                v-model="odsForm.servicesUrl"
-                class="form-control rounded-4"
-                placeholder="https://docs.google.com/spreadsheets/d/... ou arquivo .ods público"
-              />
-              <div class="form-text">A aba `Atual` entra no Kanban ativo; as demais ficam como histórico bruto.</div>
+              <label class="form-label fw-semibold">Arquivo ODS</label>
+              <input class="form-control rounded-4" type="file" accept=".ods" @change="onBackupFileChange" />
+              <div class="form-text">
+                {{ backupFileName || "Nenhum arquivo selecionado." }}
+              </div>
             </div>
-
-            <div>
-              <label class="form-label fw-semibold">Link da planilha 26 CX Loja <span class="text-danger">*</span></label>
-              <input
-                v-model="odsForm.cashUrl"
-                class="form-control rounded-4"
-                placeholder="https://docs.google.com/spreadsheets/d/... ou arquivo .ods público"
-              />
-              <div class="form-text">Importa Fluxo de Caixa, Gerência de Caixa, Estoque e Compras.</div>
+            <div class="alert alert-warning border-0 mb-0">
+              Importar um backup substitui a base atual. Use apenas arquivos gerados por esta nova lógica.
             </div>
           </div>
 
           <div class="d-flex flex-wrap gap-2">
-            <button class="btn btn-primary rounded-pill" :disabled="busy.odsImport" @click="runGoogleLinksImport">
-              <i class="fa-solid fa-file-import me-2"></i>
-              {{ busy.odsImport ? "Importando planilhas..." : "Importar links ODS" }}
+            <button class="btn btn-primary rounded-pill" :disabled="busy.odsImport || !backupFile" @click="runBackupImport">
+              <i class="fa-solid fa-database me-2"></i>
+              {{ busy.odsImport ? "Importando backup..." : "Importar e substituir" }}
             </button>
-            <button class="btn btn-outline-success rounded-pill" :disabled="busy.odsExport" @click="downloadOperationalOds">
-              <i class="fa-solid fa-file-arrow-down me-2"></i>
-              {{ busy.odsExport ? "Gerando ODS..." : "Exportar ODS de conferência" }}
+            <button class="btn btn-outline-secondary rounded-pill" :disabled="busy.odsImport && !backupFile" @click="clearBackupFile">
+              Limpar arquivo
             </button>
-          </div>
-
-          <div class="panel-card bg-body-tertiary border-0">
-            <div class="small fw-semibold mb-2">Formato esperado</div>
-            <ul class="mb-0 ps-3">
-              <li>Links públicos do Google Sheets com acesso de leitura</li>
-              <li>ou URLs diretas para arquivos `.ods`</li>
-              <li>Os nomes lógicos já são tratados como `Serviços 2026.ods` e `26 CX Loja ok em 29 02.ods`</li>
-              <li>O botão de exportação gera um `.ods` com abas de lançamentos, estoque, saldos, OS, clientes e PDV</li>
-            </ul>
           </div>
         </section>
       </div>
@@ -688,6 +619,7 @@ import { useSessionStore } from "../stores/session";
 const session = useSessionStore();
 const currentTab = ref<"operations" | "admin" | "transfer">("operations");
 const adminLoaded = ref(false);
+const backupFile = ref<File | null>(null);
 
 const mysqlForm = reactive({
   host: "168.232.199.161",
@@ -770,9 +702,14 @@ const activeCashAccounts = computed(() => cashAccounts.value.filter((item) => Nu
 
 const lastActionLabel = computed(() => lastAction.value || "Nenhuma operação executada");
 
+const backupFileName = computed(() => backupFile.value?.name || "");
+
 const summaryChips = computed(() => {
   const payload = lastResult.value || {};
   const chips: Array<{ label: string; value: string | number }> = [];
+  if (payload.fileName) {
+    chips.push({ label: "Arquivo", value: payload.fileName });
+  }
   if (payload.databaseName) {
     chips.push({ label: "Banco", value: payload.databaseName });
   }
@@ -1095,13 +1032,59 @@ async function downloadOperationalOds() {
     anchor.download = fileName;
     anchor.click();
     window.URL.revokeObjectURL(url);
-    lastAction.value = "Exportação ODS gerada";
+    lastAction.value = "Backup ODS gerado";
     lastResult.value = { fileName, exportedAt: new Date().toISOString() };
-    await notifySuccess("Arquivo exportado", fileName);
+    await notifySuccess("Backup exportado", fileName);
   } catch (error) {
     await notifyError(error);
   } finally {
     busy.odsExport = false;
+  }
+}
+
+function clearBackupFile() {
+  backupFile.value = null;
+}
+
+async function onBackupFileChange(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const file = input?.files?.[0] || null;
+  backupFile.value = file;
+}
+
+async function fileToBase64(file: File) {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Falha ao ler arquivo."));
+    reader.readAsDataURL(file);
+  });
+  const commaIndex = dataUrl.indexOf(",");
+  return commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl;
+}
+
+async function runBackupImport() {
+  if (!backupFile.value) {
+    await notifyError(new Error("Selecione um arquivo ODS para importar."));
+    return;
+  }
+
+  busy.odsImport = true;
+  try {
+    const contentBase64 = await fileToBase64(backupFile.value);
+    const response = await api.importOperationalOds({
+      fileName: backupFile.value.name,
+      contentBase64,
+      clearExisting: true
+    });
+    lastAction.value = "Backup ODS importado";
+    lastResult.value = response.data;
+    await session.refreshMeta();
+    await notifySuccess("Backup importado", `Arquivo ${backupFile.value.name} aplicado com sucesso.`);
+  } catch (error) {
+    await notifyError(error);
+  } finally {
+    busy.odsImport = false;
   }
 }
 

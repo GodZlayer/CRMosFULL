@@ -614,6 +614,12 @@ export function createApiServer(repo, options = {}) {
         });
       }
 
+      if (pathname === "/api/system-transfer/import/ods" && method === "POST") {
+        ensureRole(user, ["ADMIN", "GERENTE"]);
+        const body = await readJsonBody(request);
+        return sendJson(response, 200, { data: repo.importOperationalOds({ ...body, _actor: user }) });
+      }
+
       if (pathname === "/api/system-transfer/import/mysql" && method === "POST") {
         ensureRole(user, ["ADMIN", "GERENTE"]);
         const body = await readJsonBody(request);

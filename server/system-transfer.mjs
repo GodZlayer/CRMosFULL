@@ -3,8 +3,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pickNamedParams } from "./repository.mjs";
+import { createOdsWorkbook } from "./ods-export.mjs";
+import { parseOdsBuffer } from "./legacy-ods.mjs";
 
 const SQLITE_EXCLUDED_TABLES = new Set(["sqlite_sequence", "sessions", "company_sessions"]);
+const BACKUP_NULL_TOKEN = "__CRM_NULL__";
 const DEFAULT_MYSQL_CONFIG = {
   host: "168.232.199.161",
   user: "dnle_CRMADMIN",
@@ -80,6 +83,204 @@ export function listPortableSqliteTables(db) {
   )
     .map((row) => row.name)
     .filter((name) => !shouldSkipTable(name));
+}
+
+function getSqliteTableColumns(db, tableName) {
+  return sqliteAll(db, `PRAGMA table_info(${tableName})`);
+}
+
+function normalizeOdsTableName(value = "") {
+  return String(value || "").trim();
+}
+
+function normalizeBackupCell(value, column = {}) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const text = String(value).trim();
+  if (text === BACKUP_NULL_TOKEN) {
+    return null;
+  }
+  if (text === "") {
+    return String(column.type || "").toUpperCase().includes("TEXT") ? "" : null;
+  }
+  const normalizedType = String(column.type || "").toUpperCase();
+  if (normalizedType.includes("INT")) {
+    const parsed = Number(text);
+    return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+  }
+  if (normalizedType.includes("REAL") || normalizedType.includes("NUM") || normalizedType.includes("DOUB") || normalizedType.includes("FLOA")) {
+    const parsed = Number(text);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return text;
+}
+
+function toBackupSheetRows(columns = [], rows = []) {
+  const header = columns.map((column) => column.name);
+  const body = rows.map((row) => header.map((columnName) => {
+    const value = row?.[columnName];
+    return value === null || value === undefined ? BACKUP_NULL_TOKEN : value;
+  }));
+  return [header, ...body];
+}
+
+export function exportSqliteBackupOds(db, options = {}) {
+  const exportedAt = String(options.exportedAt || new Date().toISOString());
+  const actorName = String(options.actorName || "Sistema");
+  const tables = listPortableSqliteTables(db);
+  const sheets = [];
+  const summaryRows = [
+    { campo: "Exportado em", valor: exportedAt },
+    { campo: "Criado por", valor: actorName },
+    { campo: "Tabelas exportadas", valor: tables.length }
+  ];
+
+  for (const tableName of tables) {
+    const rows = sqliteAll(db, `SELECT * FROM ${escapeIdentifier(tableName)}`);
+    const columns = getSqliteTableColumns(db, tableName);
+    sheets.push({
+      name: tableName,
+      rows: toBackupSheetRows(columns, rows)
+    });
+    summaryRows.push({ campo: tableName, valor: rows.length });
+  }
+
+  sheets.unshift({
+    name: "Resumo",
+    rows: [
+      ["campo", "valor"],
+      ...summaryRows.map((row) => [row.campo, row.valor])
+    ]
+  });
+
+  return {
+    fileName: String(options.fileName || `backup-crm-${exportedAt.slice(0, 10)}.ods`),
+    exportedAt,
+    tables: tables.map((tableName) => ({
+      table: tableName,
+      rows: sqliteAll(db, `SELECT COUNT(*) AS total FROM ${escapeIdentifier(tableName)}`)[0]?.total || 0
+    })),
+    totalRows: tables.reduce(
+      (total, tableName) => total + Number(sqliteAll(db, `SELECT COUNT(*) AS total FROM ${escapeIdentifier(tableName)}`)[0]?.total || 0),
+      0
+    ),
+    buffer: createOdsWorkbook({
+      sheets,
+      meta: {
+        creator: actorName,
+        createdAt: exportedAt
+      }
+    })
+  };
+}
+
+function readBackupWorkbook(input) {
+  if (Buffer.isBuffer(input)) {
+    return parseOdsBuffer(input);
+  }
+  if (input instanceof Uint8Array) {
+    return parseOdsBuffer(Buffer.from(input));
+  }
+  throw new Error("Arquivo ODS invalido para importacao.");
+}
+
+export function importSqliteBackupOds(db, input, options = {}) {
+  const workbook = readBackupWorkbook(input);
+  const tables = listPortableSqliteTables(db);
+  const sheetsByName = new Map(workbook.sheets.map((sheet) => [normalizeOdsTableName(sheet.name), sheet]));
+  const missingSheets = tables.filter((tableName) => !sheetsByName.has(tableName));
+  if (missingSheets.length) {
+    throw new Error(`Arquivo ODS incompleto ou legado. Faltam abas: ${missingSheets.join(", ")}`);
+  }
+
+  const summary = [];
+  const clearExisting = options.clearExisting !== false;
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN IMMEDIATE");
+
+  try {
+    if (clearExisting) {
+      for (const tableName of tables.slice().reverse()) {
+        sqliteRun(db, `DELETE FROM ${escapeIdentifier(tableName)}`);
+      }
+      if (tables.length) {
+        const quotedNames = tables.map((name) => `'${String(name).replace(/'/g, "''")}'`).join(", ");
+        sqliteRun(db, `DELETE FROM sqlite_sequence WHERE name IN (${quotedNames})`);
+      }
+    }
+
+    for (const tableName of tables) {
+      const sheet = sheetsByName.get(tableName);
+      const columns = getSqliteTableColumns(db, tableName);
+      const header = Array.isArray(sheet.rows?.[0]) ? sheet.rows[0].map((cell) => String(cell || "").trim()) : [];
+      const columnMap = new Map(columns.map((column) => [column.name, column]));
+      const usableColumns = header.filter((columnName) => columnMap.has(columnName));
+      const insertColumns = usableColumns.length ? usableColumns : columns.map((column) => column.name);
+      const headerIndexMap = new Map(header.map((columnName, index) => [columnName, index]));
+      if (!insertColumns.length) {
+        summary.push({ table: tableName, rows: 0 });
+        continue;
+      }
+
+      const placeholders = insertColumns.map((column) => `:${column}`).join(", ");
+      const insertSql = `INSERT INTO ${escapeIdentifier(tableName)} (${insertColumns.map((column) => escapeIdentifier(column)).join(", ")}) VALUES (${placeholders})`;
+      const insert = db.prepare(insertSql);
+      let importedRows = 0;
+
+      for (let rowIndex = 1; rowIndex < (sheet.rows?.length || 0); rowIndex += 1) {
+        const row = sheet.rows[rowIndex] || [];
+        if (!Array.isArray(row)) {
+          continue;
+        }
+        const params = {};
+        let emptyRow = true;
+        insertColumns.forEach((columnName, columnIndex) => {
+          const column = columnMap.get(columnName) || {};
+          const headerIndex = headerIndexMap.has(columnName) ? headerIndexMap.get(columnName) : columnIndex;
+          const rawValue = headerIndex === undefined ? undefined : row[headerIndex];
+          const normalized = normalizeBackupCell(rawValue, column);
+          params[columnName] = normalized;
+          if (normalized !== null && normalized !== "") {
+            emptyRow = false;
+          }
+        });
+        if (emptyRow) {
+          continue;
+        }
+        insert.run(params);
+        importedRows += 1;
+      }
+
+      summary.push({ table: tableName, rows: importedRows });
+    }
+
+    for (const tableName of tables) {
+      const pkColumn = getSqliteTableColumns(db, tableName).find((column) => column.pk === 1 && String(column.type || "").toUpperCase().includes("INT"));
+      if (!pkColumn) {
+        continue;
+      }
+      const maxId = sqliteAll(db, `SELECT COALESCE(MAX(${escapeIdentifier(pkColumn.name)}), 0) AS maxId FROM ${escapeIdentifier(tableName)}`)[0]?.maxId || 0;
+      sqliteRun(db, "UPDATE sqlite_sequence SET seq = :seq WHERE name = :name", { seq: Number(maxId || 0), name: tableName });
+      sqliteRun(db, "INSERT INTO sqlite_sequence(name, seq) SELECT :name, :seq WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = :name)", { seq: Number(maxId || 0), name: tableName });
+    }
+
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+
+  return {
+    importedAt: new Date().toISOString(),
+    importedTables: summary,
+    totalRows: summary.reduce((total, item) => total + Number(item.rows || 0), 0),
+    tables: summary,
+    fileName: String(options.fileName || ""),
+    exportedAt: workbook?.meta?.creationDate || workbook?.meta?.createdAt || ""
+  };
 }
 
 function mapSqliteTypeToMysql(type = "", column = {}, context = {}) {

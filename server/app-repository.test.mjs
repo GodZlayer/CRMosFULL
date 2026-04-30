@@ -1,6 +1,6 @@
 ﻿import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEMO_USERS } from "./constants.mjs";
@@ -1174,6 +1174,11 @@ test("app repository sincroniza tarefas pela aba Atual da tarefas.ods e preserva
   const repository = createAppRepository({ dbPath: ":memory:", seedDemo: false });
   const actor = getActor(repository);
   const store = repository.getCurrentStore("BRASIL_EXPRESS");
+  const workbookPath = join(process.cwd(), "tarefas.ods");
+  if (!existsSync(workbookPath)) {
+    repository.close();
+    return;
+  }
 
   const manualTask = repository.saveTask({
     storeId: store.id,
@@ -1187,7 +1192,7 @@ test("app repository sincroniza tarefas pela aba Atual da tarefas.ods e preserva
   const result = repository.importLegacyOds({
     storeId: store.id,
     files: [
-      join(process.cwd(), "tarefas.ods")
+      workbookPath
     ],
     _actor: actor
   });

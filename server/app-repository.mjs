@@ -14,6 +14,7 @@ import {
   legacySlug,
   normalizeLegacyText,
   parseLegacySheetDate,
+  parseOdsBuffer,
   parseOdsFile
 } from "./legacy-ods.mjs";
 import {
@@ -21,7 +22,7 @@ import {
   cleanupDownloadedSources,
   createMysqlDumpFromSqlite,
   downloadLegacyWorkbookSources,
-  importMysqlToSqlite
+  importMysqlToSqlite,
 } from "./system-transfer.mjs";
 import { createOdsWorkbook } from "./ods-export.mjs";
 import {
@@ -218,6 +219,7 @@ export function createAppRepository(options = {}) {
     listLegacyImportRows,
     getLegacyImportSummary,
     importLegacyOds,
+    importOperationalOds,
     exportOperationalOds,
     backupToMysql,
     createMysqlDump,
@@ -5623,249 +5625,393 @@ export function createAppRepository(options = {}) {
     };
   }
 
+  function getOperationalWorkbookSheetMap() {
+    return {
+      resumo: "Resumo",
+      saldoCaixa: "Saldos Caixa",
+      movimentosCaixa: "Movimentos Caixa",
+      lancamentos: "Lancamentos",
+      estoque: "Estoque",
+      reposicoes: "Reposicoes",
+      ordensServico: "Ordens Servico",
+      itensOs: "Itens OS",
+      clientes: "Clientes",
+      vendasPdv: "Vendas PDV",
+      itensPdv: "Itens PDV",
+      pagamentosPdv: "Pagamentos PDV",
+      importacaoLegada: "Importacao Legada"
+    };
+  }
+
+  function getWorkbookSheet(workbook, sheetName) {
+    return workbook?.sheets?.find((sheet) => normalizeText(sheet?.name) === normalizeText(sheetName)) || null;
+  }
+
+  function getWorkbookRows(sheet) {
+    return Array.isArray(sheet?.rows) ? sheet.rows : [];
+  }
+
+  function getWorkbookHeaderMap(sheet) {
+    const rows = getWorkbookRows(sheet);
+    return rows.length ? buildHeaderMap(rows[0]) : {};
+  }
+
+  function getWorkbookRowValue(row = [], headerMap = {}, keys = []) {
+    return readCell(row, headerMap, keys);
+  }
+
+  function workbookRecordMap(sheet) {
+    const rows = getWorkbookRows(sheet);
+    const headerRow = rows[0] || [];
+    return rows.slice(1).map((row) => {
+      const record = {};
+      headerRow.forEach((header, index) => {
+        record[normalizeLegacyText(header)] = normalizeLegacyText(row[index] || "");
+      });
+      return record;
+    });
+  }
+
+  function toWorkbookNumber(value, fallback = 0) {
+    const normalized = toNumber(value);
+    return normalized === null || normalized === undefined ? fallback : normalized;
+  }
+
+  function parseWorkbookDate(value, fallback = getLocalDateString()) {
+    const normalized = normalizeText(value);
+    if (!normalized) {
+      return fallback;
+    }
+    if (/^\d{4}-\d{2}-\d{2}/.test(normalized)) {
+      return normalized.slice(0, 10);
+    }
+    return parseLegacyDateValue(normalized, fallback);
+  }
+
+  function normalizeWorkbookFileName(value = "", fallback = "loja") {
+    const slug = legacySlug(value || fallback).replace(/\s+/g, "-");
+    return slug || "loja";
+  }
+
+  function clearOperationalWorkbookData() {
+    const tables = [
+      "store_cash_movements",
+      "finance_entries",
+      "stock_replenishments",
+      "pos_payments",
+      "pos_sale_items",
+      "pos_sales",
+      "order_requested_products",
+      "order_services",
+      "order_items",
+      "order_timeline_events",
+      "order_attachments",
+      "orders",
+      "clients",
+      "cash_sessions",
+      "store_cash_accounts",
+      "catalog_stock_consumptions",
+      "catalog_stock_batches",
+      "catalog_items",
+      "legacy_import_rows",
+      "legacy_import_runs"
+    ];
+
+    for (const tableName of tables) {
+      run(`DELETE FROM ${tableName}`);
+    }
+
+    const quotedNames = tables.map((name) => `'${String(name).replace(/'/g, "''")}'`).join(", ");
+    run(`DELETE FROM sqlite_sequence WHERE name IN (${quotedNames})`);
+  }
+
+  function buildOperationalOdsSheetRows({ store, exportedAt, actor }) {
+    const storeId = Number(store?.id || 0);
+    const storeAccounts = listStoreCashAccounts(storeId);
+    const storeMovements = listStoreCashMovements({ storeId });
+    const financeEntries = listFinanceReportEntries({ storeId });
+    const replenishments = listReplenishmentReportEntries({ storeId });
+    const catalogItems = repo.listCatalogItems({}).filter((item) => Number(item.active || 0) === 1 || Number(item.stock_quantity || 0) > 0);
+    const orders = repo.listOrders({ storeId });
+    const clients = repo.listClients({});
+    const posSales = listPosSales({ storeId });
+
+    const salePaymentsByCode = new Map();
+    const saleItemsByCode = new Map();
+    const saleTotalsByCode = new Map();
+    for (const sale of posSales) {
+      const saleDetail = getPosSale(Number(sale.id));
+      salePaymentsByCode.set(sale.code, saleDetail?.payments || []);
+      saleItemsByCode.set(sale.code, saleDetail?.items || []);
+      saleTotalsByCode.set(sale.code, {
+        subtotal: Number(sale.subtotal_amount || 0),
+        total: Number(sale.total_amount || 0),
+        discount: Number(sale.discount_amount || 0)
+      });
+    }
+
+    const summaryRows = [
+      { campo: "Exportado em", valor: exportedAt },
+      { campo: "Loja", valor: store?.short_name || store?.name || "Loja" },
+      { campo: "Usuario", valor: actor?.name || "Sistema" },
+      { campo: "Contas de caixa", valor: storeAccounts.length },
+      { campo: "Movimentos caixa", valor: storeMovements.length },
+      { campo: "Lancamentos", valor: financeEntries.length },
+      { campo: "Produtos estoque", valor: catalogItems.length },
+      { campo: "Reposicoes", valor: replenishments.length },
+      { campo: "Ordens de servico", valor: orders.length },
+      { campo: "Clientes", valor: clients.length },
+      { campo: "Vendas PDV", valor: posSales.length }
+    ];
+
+    const stockUsageCounts = new Map();
+    for (const order of orders) {
+      for (const item of order.items || []) {
+        stockUsageCounts.set(Number(item.catalog_item_id || 0), (stockUsageCounts.get(Number(item.catalog_item_id || 0)) || 0) + Number(item.quantity || 0));
+      }
+    }
+
+    const sheets = [
+      {
+        name: "Resumo",
+        rows: [["campo", "valor"], ...summaryRows.map((row) => [row.campo, row.valor])]
+      },
+      {
+        name: "Saldos Caixa",
+        rows: [
+          ["id", "codigo", "nome", "saldo_inicial", "saldo_atual", "ativo", "total_movimentos", "ultimo_movimento"],
+          ...storeAccounts.map((account) => [
+            account.id,
+            account.code,
+            account.name,
+            Number(account.baseline_amount || 0),
+            Number(account.balance_amount || 0),
+            Number(account.active || 0),
+            Number(account.movement_count || 0),
+            account.last_movement_date || ""
+          ])
+        ]
+      },
+      {
+        name: "Movimentos Caixa",
+        rows: [
+          ["id", "data_movimento", "tipo_lancamento", "tipo_movimento", "descricao", "valor", "conta_caixa_id", "conta_caixa_codigo", "conta_caixa_nome", "categoria_financeira", "forma_pagamento", "venda_pdv_codigo", "workbook_origem", "aba_origem", "linha_origem", "secao_legada", "payload_bruto"],
+          ...storeMovements.map((movement) => [
+            movement.id,
+            String(movement.movement_date || "").slice(0, 10),
+            movement.entry_type || "",
+            movement.movement_type || "",
+            movement.description || "",
+            Number(movement.amount || 0),
+            movement.cash_account_id || "",
+            movement.cash_account_code || "",
+            movement.cash_account_name || "",
+            movement.finance_category || "",
+            movement.finance_payment_method || "",
+            movement.sale_code || "",
+            movement.source_workbook || "",
+            movement.source_sheet || "",
+            movement.source_row || "",
+            movement.legacy_section || "",
+            movement.raw_payload || ""
+          ])
+        ]
+      },
+      {
+        name: "Lancamentos",
+        rows: [
+          ["id", "data_lancamento", "tipo", "categoria", "descricao", "valor", "forma_pagamento", "conta_caixa_id", "conta_caixa_codigo", "conta_caixa_nome", "pedido_id", "codigo_os", "reposicao_id", "workbook_origem", "aba_origem", "linha_origem", "secao_legada", "payload_bruto"],
+          ...[...financeEntries, ...replenishments]
+            .sort((left, right) => String(right.entry_date || right.entryDate || right.entry_date || right.description || "").localeCompare(String(left.entry_date || left.description || "")))
+            .map((entry) => [
+              entry.finance_entry_id || entry.id || "",
+              entry.entry_date || entry.entryDate || String(entry.entry_date || "").slice(0, 10),
+              entry.entry_type || entry.entryType || "",
+              entry.category || "",
+              entry.description || "",
+              Number(entry.amount || 0),
+              entry.payment_method || "",
+              entry.cash_account_id || "",
+              entry.cash_account_code || "",
+              entry.cash_account_name || "",
+              entry.order_id || "",
+              entry.order_code || "",
+              entry.replenishment_id || "",
+              entry.source_workbook || "",
+              entry.source_sheet || "",
+              entry.source_row || "",
+              entry.legacy_section || "",
+              entry.raw_payload || ""
+            ])
+        ]
+      },
+      {
+        name: "Estoque",
+        rows: [
+          ["id", "sku", "nome", "marca", "categoria", "subcategoria", "condicao", "estoque", "estoque_minimo", "custo", "preco", "valor_custo_estoque", "valor_venda_estoque", "situacao_estoque", "ativo", "uso_em_os"],
+          ...catalogItems.map((item) => {
+            const stockQuantity = Number(item.stock_quantity || 0);
+            const minStock = Number(item.min_stock || 0);
+            const costAmount = Number(item.cost_amount || 0);
+            const priceAmount = Number(item.price_amount || 0);
+            const status = stockQuantity <= 0 ? "Sem estoque" : (stockQuantity <= minStock ? "Baixo" : "Saudavel");
+            return [
+              item.id,
+              item.sku || "",
+              item.name || "",
+              item.brand || "",
+              item.category || "",
+              item.subcategory || "",
+              item.item_condition || "",
+              stockQuantity,
+              minStock,
+              costAmount,
+              priceAmount,
+              roundCurrency(stockQuantity * costAmount),
+              roundCurrency(stockQuantity * priceAmount),
+              status,
+              Number(item.active || 0),
+              stockUsageCounts.get(Number(item.id)) || 0
+            ];
+          })
+        ]
+      },
+      {
+        name: "Reposicoes",
+        rows: [
+          ["id", "data", "descricao", "valor", "workbook_origem", "aba_origem", "linha_origem"],
+          ...replenishments.map((entry) => [
+            entry.replenishment_id || entry.id || "",
+            String(entry.entry_date || "").slice(0, 10),
+            entry.description || "",
+            Number(entry.amount || 0),
+            entry.source_workbook || "",
+            entry.source_sheet || "",
+            entry.source_row || ""
+          ])
+        ]
+      },
+      {
+        name: "Ordens Servico",
+        rows: [
+          ["id", "codigo", "cliente", "telefone_cliente", "equipamento", "defeito", "tecnico", "status_os", "status_aprovacao", "total", "aberto_em", "concluido_em", "atualizado_em"],
+          ...orders.map((order) => [
+            order.id,
+            order.code || "",
+            order.client_name || "",
+            order.client_phone || "",
+            order.equipment || "",
+            order.defect || "",
+            order.technician_name || "",
+            order.order_status || "",
+            order.approval_status || "",
+            Number(order.total_amount || 0),
+            String(order.opened_at || "").slice(0, 10),
+            String(order.concluded_at || "").slice(0, 10),
+            order.updated_at || ""
+          ])
+        ]
+      },
+      {
+        name: "Itens OS",
+        rows: [["sem_dados"], ["Nenhum registro encontrado."]]
+      },
+      {
+        name: "Clientes",
+        rows: [
+          ["id", "nome", "telefone", "email", "documento", "endereco", "pedidos", "gasto_total", "pedidos_abertos"],
+          ...clients.map((client) => [
+            client.id,
+            client.name || "",
+            client.phone || "",
+            client.email || "",
+            client.document || "",
+            client.address || "",
+            Number(client.orders_count || 0),
+            Number(client.total_spent || 0),
+            Number(client.open_orders || 0)
+          ])
+        ]
+      },
+      {
+        name: "Vendas PDV",
+        rows: [
+          ["id", "codigo", "cliente", "operador", "subtotal", "desconto", "total", "formas_pagamento", "troco", "criado_em"],
+          ...posSales.map((sale) => {
+            const payments = salePaymentsByCode.get(sale.code) || [];
+            const paymentMethods = [...new Set(payments.map((payment) => payment.payment_method).filter(Boolean))].join(", ");
+            const saleTotals = saleTotalsByCode.get(sale.code) || {};
+            const totalPaid = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+            return [
+              sale.id,
+              sale.code || "",
+              sale.client_name || "",
+              sale.operator_name || store?.short_name || store?.name || "",
+              Number(saleTotals.subtotal ?? sale.subtotal_amount ?? 0),
+              Number(sale.discount_amount || 0),
+              Number(saleTotals.total ?? sale.total_amount ?? 0),
+              paymentMethods,
+              roundCurrency(Math.max(0, totalPaid - Number(sale.total_amount || 0))),
+              sale.created_at || ""
+            ];
+          })
+        ]
+      },
+      {
+        name: "Itens PDV",
+        rows: [
+          ["id", "venda_id", "codigo_venda", "tipo_item", "catalogo_id", "servico_id", "descricao", "quantidade", "custo_unitario", "preco_unitario", "total_linha"],
+          ...posSales.flatMap((sale) => {
+            const saleItems = saleItemsByCode.get(sale.code) || [];
+            return saleItems.map((item) => [
+              item.id,
+              item.sale_id || sale.id,
+              sale.code || "",
+              item.item_type || "",
+              item.catalog_item_id || "",
+              item.service_catalog_id || "",
+              item.item_name || "",
+              Number(item.quantity || 0),
+              Number(item.unit_cost || 0),
+              Number(item.unit_price || 0),
+              Number(item.line_total || 0)
+            ]);
+          })
+        ]
+      },
+      {
+        name: "Pagamentos PDV",
+        rows: [
+          ["id", "venda_id", "codigo_venda", "forma_pagamento", "valor", "criado_em"],
+          ...posSales.flatMap((sale) => {
+            const payments = salePaymentsByCode.get(sale.code) || [];
+            return payments.map((payment) => [
+              payment.id,
+              payment.sale_id || sale.id,
+              sale.code || "",
+              payment.payment_method || "",
+              Number(payment.amount || 0),
+              payment.created_at || ""
+            ]);
+          })
+        ]
+      },
+      {
+        name: "Importacao Legada",
+        rows: [["sem_dados"], ["Nenhum registro encontrado."]]
+      }
+    ];
+
+    return sheets;
+  }
+
   function exportOperationalOds(payload = {}) {
     const actor = payload._actor || payload.actor;
     const store = requireStoreContext(payload);
     const exportedAt = nowIso();
-
-    const summaryRows = [
-      { campo: "Exportado em", valor: exportedAt },
-      { campo: "Loja", valor: store.short_name || store.name || "" },
-      { campo: "Codigo da loja", valor: store.code || "" }
-    ];
-
-    const cashAccounts = listStoreCashAccounts(store.id).map((item) => ({
-      id: Number(item.id || 0),
-      codigo: normalizeText(item.code),
-      nome: normalizeText(item.name),
-      saldo_inicial: Number(item.baseline_amount || 0),
-      saldo_atual: Number(item.balance_amount || 0),
-      ativo: Number(item.active || 0),
-      total_movimentos: Number(item.movement_count || 0),
-      ultimo_movimento: normalizeText(item.last_movement_date)
-    }));
-    summaryRows.push({ campo: "Contas de caixa", valor: cashAccounts.length });
-
-    const cashMovements = listStoreCashMovements({ storeId: store.id }).map((item) => ({
-      id: Number(item.id || 0),
-      data_movimento: normalizeText(item.movement_date),
-      tipo_lancamento: normalizeText(item.entry_type),
-      tipo_movimento: normalizeText(item.movement_type),
-      descricao: normalizeText(item.description),
-      valor: Number(item.amount || 0),
-      conta_caixa_id: item.cash_account_id ? Number(item.cash_account_id) : null,
-      conta_caixa_codigo: normalizeText(item.cash_account_code),
-      conta_caixa_nome: normalizeText(item.cash_account_name),
-      categoria_financeira: normalizeText(item.finance_category),
-      forma_pagamento: normalizeText(item.finance_payment_method),
-      venda_pdv_codigo: normalizeText(item.sale_code),
-      workbook_origem: normalizeText(item.source_workbook),
-      aba_origem: normalizeText(item.source_sheet),
-      linha_origem: item.source_row ?? null,
-      secao_legada: normalizeText(item.legacy_section),
-      payload_bruto: normalizeText(item.raw_payload)
-    }));
-    summaryRows.push({ campo: "Movimentos de caixa", valor: cashMovements.length });
-
-    const financeEntries = listFinanceReportEntries({ storeId: store.id }).map((item) => ({
-      id: Number(item.id || 0),
-      data_lancamento: normalizeText(item.entry_date),
-      tipo: normalizeText(item.entry_type),
-      categoria: normalizeText(item.category),
-      descricao: normalizeText(item.description),
-      valor: Number(item.amount || 0),
-      forma_pagamento: normalizeText(item.payment_method),
-      conta_caixa_id: item.cash_account_id ? Number(item.cash_account_id) : null,
-      conta_caixa_codigo: normalizeText(item.cash_account_code),
-      conta_caixa_nome: normalizeText(item.cash_account_name),
-      pedido_id: item.order_id ? Number(item.order_id) : null,
-      codigo_os: normalizeText(item.order_code),
-      reposicao_id: item.replenishment_id ? Number(item.replenishment_id) : null,
-      workbook_origem: normalizeText(item.source_workbook),
-      aba_origem: normalizeText(item.source_sheet),
-      linha_origem: item.source_row ?? null,
-      secao_legada: normalizeText(item.legacy_section),
-      payload_bruto: normalizeText(item.raw_payload)
-    }));
-    summaryRows.push({ campo: "Lancamentos financeiros", valor: financeEntries.length });
-
-    const inventory = repo.listCatalogItems({}).map((item) => ({
-      id: Number(item.id || 0),
-      sku: normalizeText(item.sku),
-      nome: normalizeText(item.name),
-      marca: normalizeText(item.brand),
-      categoria: normalizeText(item.category),
-      subcategoria: normalizeText(item.subcategory),
-      condicao: normalizeText(item.item_condition),
-      estoque: Number(item.stock_quantity || 0),
-      estoque_minimo: Number(item.min_stock || 0),
-      custo: Number(item.cost_amount || 0),
-      preco: Number(item.price_amount || 0),
-      valor_custo_estoque: Number(item.stock_cost_value || 0),
-      valor_venda_estoque: Number(item.stock_value || 0),
-      situacao_estoque: normalizeText(item.stock_health_label),
-      ativo: Number(item.active || 0),
-      uso_em_os: Number(item.linked_orders_count || 0)
-    }));
-    summaryRows.push({ campo: "Itens de estoque", valor: inventory.length });
-
-    const replenishments = listReplenishmentReportEntries({ storeId: store.id }).map((item) => ({
-      id: Number(item.replenishment_id || item.id || 0),
-      data: normalizeText(item.entry_date),
-      descricao: normalizeText(item.description),
-      valor: Number(item.amount || 0),
-      workbook_origem: normalizeText(item.source_workbook),
-      aba_origem: normalizeText(item.source_sheet),
-      linha_origem: item.source_row ?? null
-    }));
-    summaryRows.push({ campo: "Reposicoes de estoque", valor: replenishments.length });
-
-    const orders = repo.listOrders({}).map((item) => ({
-      id: Number(item.id || 0),
-      codigo: normalizeText(item.code),
-      cliente: normalizeText(item.client_name),
-      telefone_cliente: normalizeText(item.client_phone),
-      equipamento: normalizeText(item.equipment),
-      defeito: normalizeText(item.defect),
-      tecnico: normalizeText(item.technician_name),
-      status_os: normalizeText(item.order_status),
-      status_aprovacao: normalizeText(item.approval_status),
-      total: Number(item.total_amount || 0),
-      aberto_em: normalizeText(item.opened_at),
-      concluido_em: normalizeText(item.concluded_at),
-      atualizado_em: normalizeText(item.updated_at)
-    }));
-    summaryRows.push({ campo: "Ordens de servico", valor: orders.length });
-
-    const orderItems = all(
-      `
-        SELECT
-          oi.*,
-          o.code AS order_code
-        FROM order_items oi
-        JOIN orders o ON o.id = oi.order_id
-        ORDER BY oi.id ASC
-      `
-    ).map((item) => ({
-      id: Number(item.id || 0),
-      os_id: Number(item.order_id || 0),
-      codigo_os: normalizeText(item.order_code),
-      catalogo_id: item.catalog_item_id ? Number(item.catalog_item_id) : null,
-      item: normalizeText(item.item_name),
-      sku: normalizeText(item.sku),
-      categoria: normalizeText(item.category),
-      condicao: normalizeText(item.item_condition),
-      quantidade: Number(item.quantity || 0),
-      custo_unitario: Number(item.unit_cost || 0),
-      preco_unitario: Number(item.unit_price || 0)
-    }));
-    summaryRows.push({ campo: "Itens de OS", valor: orderItems.length });
-
-    const clients = repo.listClients({}).map((item) => ({
-      id: Number(item.id || 0),
-      nome: normalizeText(item.name),
-      telefone: normalizeText(item.phone),
-      email: normalizeText(item.email),
-      documento: normalizeText(item.document),
-      endereco: normalizeText(item.address),
-      pedidos: Number(item.orders_count || 0),
-      gasto_total: Number(item.total_spent || 0),
-      pedidos_abertos: Number(item.open_orders || 0)
-    }));
-    summaryRows.push({ campo: "Clientes", valor: clients.length });
-
-    const posSales = listPosSales({ storeId: store.id }).map((item) => ({
-      id: Number(item.id || 0),
-      codigo: normalizeText(item.code),
-      cliente: normalizeText(item.client_name),
-      operador: normalizeText(item.operator_name),
-      subtotal: Number(item.subtotal_amount || 0),
-      desconto: Number(item.discount_amount || 0),
-      total: Number(item.total_amount || 0),
-      formas_pagamento: normalizeText(item.payment_summary),
-      troco: Number(item.change_amount || 0),
-      criado_em: normalizeText(item.created_at)
-    }));
-    summaryRows.push({ campo: "Vendas PDV", valor: posSales.length });
-
-    const posSaleItems = all(
-      `
-        SELECT
-          psi.*,
-          ps.code AS sale_code
-        FROM pos_sale_items psi
-        JOIN pos_sales ps ON ps.id = psi.sale_id
-        WHERE ps.store_id = :storeId
-        ORDER BY psi.id ASC
-      `,
-      { storeId: store.id }
-    ).map((item) => ({
-      id: Number(item.id || 0),
-      venda_id: Number(item.sale_id || 0),
-      codigo_venda: normalizeText(item.sale_code),
-      tipo_item: normalizeText(item.item_type),
-      catalogo_id: item.catalog_item_id ? Number(item.catalog_item_id) : null,
-      servico_id: item.service_catalog_id ? Number(item.service_catalog_id) : null,
-      descricao: normalizeText(item.item_name),
-      quantidade: Number(item.quantity || 0),
-      custo_unitario: Number(item.unit_cost || 0),
-      preco_unitario: Number(item.unit_price || 0),
-      total_linha: Number(item.line_total || 0)
-    }));
-    summaryRows.push({ campo: "Itens PDV", valor: posSaleItems.length });
-
-    const posPayments = all(
-      `
-        SELECT
-          pp.*,
-          ps.code AS sale_code
-        FROM pos_payments pp
-        JOIN pos_sales ps ON ps.id = pp.sale_id
-        WHERE ps.store_id = :storeId
-        ORDER BY pp.id ASC
-      `,
-      { storeId: store.id }
-    ).map((item) => ({
-      id: Number(item.id || 0),
-      venda_id: Number(item.sale_id || 0),
-      codigo_venda: normalizeText(item.sale_code),
-      forma_pagamento: normalizeText(item.payment_method),
-      valor: Number(item.amount || 0),
-      criado_em: normalizeText(item.created_at)
-    }));
-    summaryRows.push({ campo: "Pagamentos PDV", valor: posPayments.length });
-
-    const legacyRows = listLegacyImportRows({}).map((item) => ({
-      id: Number(item.id || 0),
-      importacao_id: item.import_run_id ? Number(item.import_run_id) : null,
-      workbook_origem: normalizeText(item.source_workbook),
-      aba_origem: normalizeText(item.source_sheet),
-      linha_origem: item.source_row ?? null,
-      entidade: normalizeText(item.entity_type),
-      entidade_id: item.entity_id ? Number(item.entity_id) : null,
-      payload_estruturado: normalizeText(item.structured_payload),
-      payload_bruto: normalizeText(item.raw_payload),
-      importado_em: normalizeText(item.created_at)
-    }));
-    summaryRows.push({ campo: "Linhas importadas do legado", valor: legacyRows.length });
-
-    const sheets = [
-      toSheet("Resumo", summaryRows),
-      toSheet("Saldos Caixa", cashAccounts),
-      toSheet("Movimentos Caixa", cashMovements),
-      toSheet("Lancamentos", financeEntries),
-      toSheet("Estoque", inventory),
-      toSheet("Reposicoes", replenishments),
-      toSheet("Ordens Servico", orders),
-      toSheet("Itens OS", orderItems),
-      toSheet("Clientes", clients),
-      toSheet("Vendas PDV", posSales),
-      toSheet("Itens PDV", posSaleItems),
-      toSheet("Pagamentos PDV", posPayments),
-      toSheet("Importacao Legada", legacyRows)
-    ];
-
-    const fileName = `exportacao-${normalizeText(store.short_name || store.name || "loja").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "loja"}-${exportedAt.slice(0, 10)}.ods`;
+    const storeSlug = normalizeWorkbookFileName(store.short_name || store.name || "loja");
+    const fileName = `exportacao-${storeSlug}-${exportedAt.slice(0, 10)}.ods`;
+    const sheets = buildOperationalOdsSheetRows({ store, exportedAt, actor });
     const buffer = createOdsWorkbook({
       sheets,
       meta: {
@@ -5873,53 +6019,672 @@ export function createAppRepository(options = {}) {
         createdAt: exportedAt
       }
     });
-
-    writeAuditLog(actor, "SYSTEM_TRANSFER", null, "ODS_EXPORT", null, {
+    const summary = {
       fileName,
       exportedAt,
-      storeId: store.id,
+      store: {
+        id: store.id,
+        name: store.name,
+        shortName: store.short_name
+      },
       sheets: sheets.map((sheet) => ({
         name: sheet.name,
-        rows: Math.max((sheet.rows?.length || 1) - 1, 0)
-      }))
-    }, {
-      fileName,
-      exportedAt,
-      storeName: store.short_name || store.name
-    });
-
-    return {
-      fileName,
-      exportedAt,
-      store,
-      sheets: sheets.map((sheet) => ({
-        name: sheet.name,
-        rows: Math.max((sheet.rows?.length || 1) - 1, 0)
+        rows: Math.max(0, (sheet.rows || []).length - 1)
       })),
+      totalRows: sheets.reduce((total, sheet) => total + Math.max(0, (sheet.rows || []).length - 1), 0),
       buffer
     };
+
+    writeAuditLog(actor, "SYSTEM_TRANSFER", null, "ODS_EXPORT", null, summary, {
+      fileName,
+      exportedAt,
+      storeId: store.id
+    });
+
+    return summary;
   }
 
-  function toSheet(name, rows = []) {
-    const normalizedRows = Array.isArray(rows) ? rows : [];
-    const columns = [];
-    const seen = new Set();
-    for (const row of normalizedRows) {
-      for (const key of Object.keys(row || {})) {
-        if (!seen.has(key)) {
-          seen.add(key);
-          columns.push(key);
+  function importSheetRowsAsRecords(sheet) {
+    const rows = getWorkbookRows(sheet);
+    const headerRow = rows[0] || [];
+    const headerMap = buildHeaderMap(headerRow);
+    return { rows, headerRow, headerMap };
+  }
+
+  function clearTableRows(tableNames = []) {
+    for (const tableName of tableNames) {
+      run(`DELETE FROM ${tableName}`);
+    }
+    if (tableNames.length) {
+      const quotedNames = tableNames.map((name) => `'${String(name).replace(/'/g, "''")}'`).join(", ");
+      run(`DELETE FROM sqlite_sequence WHERE name IN (${quotedNames})`);
+    }
+  }
+
+  function importOperationalOds(payload = {}) {
+    const actor = payload._actor || payload.actor;
+    const store = requireStoreContext(payload);
+    const fileName = normalizeText(payload.fileName, "exportacao-loja-principal.ods");
+    const contentBase64 = normalizeText(payload.contentBase64 || payload.content || "");
+    if (!contentBase64) {
+      throw new Error("Envie um arquivo ODS para importar.");
+    }
+
+    const workbook = parseOdsBuffer(Buffer.from(contentBase64, "base64"));
+    const sheetMap = new Map(workbook.sheets.map((sheet) => [normalizeText(sheet.name), sheet]));
+    const requiredSheets = Object.values(getOperationalWorkbookSheetMap());
+    const missingSheets = requiredSheets.filter((sheetName) => !sheetMap.has(normalizeText(sheetName)));
+    if (missingSheets.length) {
+      throw new Error(`Arquivo ODS incompleto ou legado. Faltam abas: ${missingSheets.join(", ")}`);
+    }
+
+    const importRunId = createLegacyImportRun(fileName, "", actor);
+    const summary = {
+      workbook: fileName,
+      store: {
+        id: store.id,
+        name: store.name,
+        shortName: store.short_name
+      },
+      sheets: {},
+      importedAt: nowIso()
+    };
+    const timestamp = nowIso();
+    const fallbackUserId = normalizeActor(actor).actorUserId || Number(get("SELECT id FROM users ORDER BY id ASC LIMIT 1")?.id || 0) || null;
+    const fallbackUserName = normalizeActor(actor).actorName || normalizeText(get("SELECT name FROM users ORDER BY id ASC LIMIT 1")?.name, "Sistema") || "Sistema";
+
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec("BEGIN IMMEDIATE");
+
+    try {
+      clearTableRows([
+        "store_cash_movements",
+        "finance_entries",
+        "stock_replenishments",
+        "pos_payments",
+        "pos_sale_items",
+        "pos_sales",
+        "order_requested_products",
+        "order_services",
+        "order_items",
+        "order_timeline_events",
+        "order_attachments",
+        "orders",
+        "clients",
+        "cash_sessions",
+        "store_cash_accounts",
+        "catalog_stock_consumptions",
+        "catalog_stock_batches",
+        "catalog_items"
+      ]);
+
+      const clientsSheet = sheetMap.get("Clientes");
+      const accountsSheet = sheetMap.get("Saldos Caixa");
+      const stockSheet = sheetMap.get("Estoque");
+      const ordersSheet = sheetMap.get("Ordens Servico");
+      const salesSheet = sheetMap.get("Vendas PDV");
+      const salesItemsSheet = sheetMap.get("Itens PDV");
+      const paymentsSheet = sheetMap.get("Pagamentos PDV");
+      const movementsSheet = sheetMap.get("Movimentos Caixa");
+      const financeSheet = sheetMap.get("Lancamentos");
+      const replenishmentSheet = sheetMap.get("Reposicoes");
+
+      const clientMap = new Map();
+      const accountMap = new Map();
+      const accountSnapshotValues = new Map();
+      const itemMap = new Map();
+      const orderMap = new Map();
+      const saleMap = new Map();
+      const financeMap = new Map();
+      const replenishmentMap = new Map();
+
+      const clientRows = getWorkbookRows(clientsSheet);
+      const clientHeaderMap = buildHeaderMap(clientRows[0] || []);
+      for (let rowIndex = 1; rowIndex < clientRows.length; rowIndex += 1) {
+        const row = clientRows[rowIndex] || [];
+        const id = Number(getWorkbookRowValue(row, clientHeaderMap, ["id"]) || 0);
+        const name = getWorkbookRowValue(row, clientHeaderMap, ["nome"]);
+        const phone = getWorkbookRowValue(row, clientHeaderMap, ["telefone"]);
+        if (!name || !phone) {
+          continue;
+        }
+        run(
+          `
+            INSERT INTO clients (
+              id, name, phone, email, document, address, notes, created_at, updated_at, photo_path
+            )
+            VALUES (
+              :id, :name, :phone, :email, :document, :address, '', :createdAt, :updatedAt, ''
+            )
+          `,
+          {
+            id: id || null,
+            name,
+            phone,
+            email: getWorkbookRowValue(row, clientHeaderMap, ["email"]),
+            document: getWorkbookRowValue(row, clientHeaderMap, ["documento"]),
+            address: getWorkbookRowValue(row, clientHeaderMap, ["endereco"]),
+            createdAt: timestamp,
+            updatedAt: timestamp
+          }
+        );
+        const insertedId = id || Number(get("SELECT id FROM clients WHERE name = :name AND phone = :phone ORDER BY id DESC LIMIT 1", { name, phone })?.id || 0);
+        clientMap.set(`${legacySlug(name)}|${legacySlug(phone)}`, insertedId);
+        clientMap.set(`${legacySlug(name)}`, insertedId);
+      }
+      summary.sheets["Clientes"] = clientRows.length - 1;
+
+      const accountRows = getWorkbookRows(accountsSheet);
+      const accountHeaderMap = buildHeaderMap(accountRows[0] || []);
+      for (let rowIndex = 1; rowIndex < accountRows.length; rowIndex += 1) {
+        const row = accountRows[rowIndex] || [];
+        const id = Number(getWorkbookRowValue(row, accountHeaderMap, ["id"]) || 0);
+        const code = normalizeText(getWorkbookRowValue(row, accountHeaderMap, ["codigo"]), "").toUpperCase();
+        const name = getWorkbookRowValue(row, accountHeaderMap, ["nome"]);
+        if (!code || !name) {
+          continue;
+        }
+        run(
+          `
+            INSERT INTO store_cash_accounts (
+              id, store_id, code, name, baseline_amount, balance_amount, active, created_at, updated_at,
+              snapshot_source_workbook, snapshot_source_sheet, snapshot_source_row, snapshot_raw_payload, snapshot_updated_at
+            )
+            VALUES (
+              :id, :storeId, :code, :name, :baselineAmount, :balanceAmount, :active, :createdAt, :updatedAt,
+              '', '', NULL, '', ''
+            )
+          `,
+          {
+            id: id || null,
+            storeId: store.id,
+            code,
+            name,
+            baselineAmount: toWorkbookNumber(getWorkbookRowValue(row, accountHeaderMap, ["saldo_inicial"])),
+            balanceAmount: toWorkbookNumber(getWorkbookRowValue(row, accountHeaderMap, ["saldo_atual"])),
+            active: Number(getWorkbookRowValue(row, accountHeaderMap, ["ativo"]) || 1) ? 1 : 0,
+            createdAt: timestamp,
+            updatedAt: timestamp
+          }
+        );
+        const insertedId = id || Number(get("SELECT id FROM store_cash_accounts WHERE store_id = :storeId AND code = :code ORDER BY id DESC LIMIT 1", { storeId: store.id, code })?.id || 0);
+        accountMap.set(code, insertedId);
+        accountSnapshotValues.set(code, {
+          baselineAmount: toWorkbookNumber(getWorkbookRowValue(row, accountHeaderMap, ["saldo_inicial"])),
+          balanceAmount: toWorkbookNumber(getWorkbookRowValue(row, accountHeaderMap, ["saldo_atual"]))
+        });
+      }
+      summary.sheets["Saldos Caixa"] = accountRows.length - 1;
+
+      const stockRows = getWorkbookRows(stockSheet);
+      const stockHeaderMap = buildHeaderMap(stockRows[0] || []);
+      for (let rowIndex = 1; rowIndex < stockRows.length; rowIndex += 1) {
+        const row = stockRows[rowIndex] || [];
+        const id = Number(getWorkbookRowValue(row, stockHeaderMap, ["id"]) || 0);
+        const sku = normalizeText(getWorkbookRowValue(row, stockHeaderMap, ["sku"])) || null;
+        const name = getWorkbookRowValue(row, stockHeaderMap, ["nome"]);
+        if (!name) {
+          continue;
+        }
+        run(
+          `
+            INSERT INTO catalog_items (
+              id, sku, name, brand, category, subcategory, compatibility, description, item_condition,
+              stock_quantity, min_stock, cost_amount, price_amount, is_complete, active, is_store_inventory,
+              created_at, updated_at, location_type, deleted_at, legacy_source_id, legacy_source_sheet
+            )
+            VALUES (
+              :id, :sku, :name, :brand, :category, :subcategory, '', '', :itemCondition,
+              :stockQuantity, :minStock, :costAmount, :priceAmount, 0, :active, 0,
+              :createdAt, :updatedAt, 'ESTOQUE', '', :legacySourceId, 'Estoque'
+            )
+          `,
+          {
+            id: id || null,
+            sku,
+            name,
+            brand: getWorkbookRowValue(row, stockHeaderMap, ["marca"]),
+            category: getWorkbookRowValue(row, stockHeaderMap, ["categoria"]) || "Outros",
+            subcategory: getWorkbookRowValue(row, stockHeaderMap, ["subcategoria"]),
+            itemCondition: getWorkbookRowValue(row, stockHeaderMap, ["condicao"]) || "NOVA",
+            stockQuantity: Math.max(0, Math.trunc(toWorkbookNumber(getWorkbookRowValue(row, stockHeaderMap, ["estoque"])))),
+            minStock: Math.max(0, Math.trunc(toWorkbookNumber(getWorkbookRowValue(row, stockHeaderMap, ["estoque_minimo"])))),
+            costAmount: toWorkbookNumber(getWorkbookRowValue(row, stockHeaderMap, ["custo"])),
+            priceAmount: toWorkbookNumber(getWorkbookRowValue(row, stockHeaderMap, ["preco"])),
+            active: Number(getWorkbookRowValue(row, stockHeaderMap, ["ativo"]) || 1) ? 1 : 0,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            legacySourceId: sku || String(id || "")
+          }
+        );
+        const insertedId = id || Number(get("SELECT id FROM catalog_items WHERE name = :name ORDER BY id DESC LIMIT 1", { name })?.id || 0);
+        itemMap.set(String(id || insertedId), insertedId);
+        itemMap.set(legacySlug(name), insertedId);
+        if (sku) {
+          itemMap.set(legacySlug(sku), insertedId);
         }
       }
+      summary.sheets["Estoque"] = stockRows.length - 1;
+
+      const replenishmentRows = getWorkbookRows(replenishmentSheet);
+      const replenishmentHeaderMap = buildHeaderMap(replenishmentRows[0] || []);
+      for (let rowIndex = 1; rowIndex < replenishmentRows.length; rowIndex += 1) {
+        const row = replenishmentRows[rowIndex] || [];
+        const description = getWorkbookRowValue(row, replenishmentHeaderMap, ["descricao"]);
+        if (!description) {
+          continue;
+        }
+        const id = Number(getWorkbookRowValue(row, replenishmentHeaderMap, ["id"]) || 0);
+        const extractedName = normalizeText(description.replace(/^Estoque inicial:\s*/i, "").replace(/\s*\(Qtd:.*/i, ""));
+        const quantityMatch = description.match(/\(Qtd:\s*(\d+)\s*\)/i);
+        const quantity = Math.max(1, Number(quantityMatch?.[1] || 1));
+        const matchedItemId = itemMap.get(legacySlug(extractedName)) || itemMap.get(legacySlug(description)) || null;
+        if (!matchedItemId) {
+          continue;
+        }
+        const amount = toWorkbookNumber(getWorkbookRowValue(row, replenishmentHeaderMap, ["valor"]));
+        run(
+          `
+            INSERT INTO stock_replenishments (
+              id, catalog_item_id, quantity, new_cost_amount, new_price_amount, previous_cost_amount,
+              previous_price_amount, notes, actor_user_id, actor_name, created_at, source_workbook,
+              source_sheet, source_row, raw_payload, finance_entry_id, extra_finance_entry_id
+            )
+            VALUES (
+              :id, :catalogItemId, :quantity, :newCostAmount, :newPriceAmount, NULL,
+              NULL, :notes, :actorUserId, :actorName, :createdAt, :sourceWorkbook,
+              :sourceSheet, :sourceRow, :rawPayload, NULL, NULL
+            )
+          `,
+          {
+            id: id || null,
+            catalogItemId: matchedItemId,
+            quantity,
+            newCostAmount: matchedItemId ? Number(get("SELECT cost_amount FROM catalog_items WHERE id = :id", { id: matchedItemId })?.cost_amount || 0) : amount,
+            newPriceAmount: matchedItemId ? Number(get("SELECT price_amount FROM catalog_items WHERE id = :id", { id: matchedItemId })?.price_amount || 0) : amount,
+            notes: description,
+            actorUserId: fallbackUserId,
+            actorName: fallbackUserName,
+            createdAt: timestamp,
+            sourceWorkbook: getWorkbookRowValue(row, replenishmentHeaderMap, ["workbook_origem"]),
+            sourceSheet: getWorkbookRowValue(row, replenishmentHeaderMap, ["aba_origem"]) || "Reposicoes",
+            sourceRow: Number(getWorkbookRowValue(row, replenishmentHeaderMap, ["linha_origem"]) || rowIndex + 1),
+            rawPayload: JSON.stringify({
+              description,
+              value: amount
+            })
+          }
+        );
+        const insertedId = id || Number(get("SELECT id FROM stock_replenishments ORDER BY id DESC LIMIT 1")?.id || 0);
+        replenishmentMap.set(String(id || insertedId), insertedId);
+      }
+      summary.sheets["Reposicoes"] = replenishmentRows.length - 1;
+
+      const orderRows = getWorkbookRows(ordersSheet);
+      const orderHeaderMap = buildHeaderMap(orderRows[0] || []);
+      for (let rowIndex = 1; rowIndex < orderRows.length; rowIndex += 1) {
+        const row = orderRows[rowIndex] || [];
+        const id = Number(getWorkbookRowValue(row, orderHeaderMap, ["id"]) || 0);
+        const code = getWorkbookRowValue(row, orderHeaderMap, ["codigo"]);
+        const clientName = getWorkbookRowValue(row, orderHeaderMap, ["cliente"]);
+        const phone = getWorkbookRowValue(row, orderHeaderMap, ["telefone_cliente"]);
+        if (!code || !clientName) {
+          continue;
+        }
+        const clientId = clientMap.get(`${legacySlug(clientName)}|${legacySlug(phone)}`) || clientMap.get(legacySlug(clientName)) || null;
+        if (!clientId) {
+          continue;
+        }
+        run(
+          `
+            INSERT INTO orders (
+              id, code, client_id, phone_snapshot, equipment, defect, extras, photo_path, technician_name, due_date,
+              order_status, approval_status, quote_amount, pre_approved_limit, actual_amount, service_amount,
+              discount_amount, total_amount, payment_method, notes, opened_at, concluded_at, delivered_at,
+              cancelled_at, created_at, updated_at
+            )
+            VALUES (
+              :id, :code, :clientId, :phoneSnapshot, :equipment, :defect, '', '', :technicianName, '',
+              :orderStatus, :approvalStatus, :quoteAmount, NULL, NULL, :serviceAmount,
+              0, :totalAmount, 'NAO_DEFINIDO', '', :openedAt, :concludedAt, '', '',
+              :createdAt, :updatedAt
+            )
+          `,
+          {
+            id: id || null,
+            code,
+            clientId,
+            phoneSnapshot: phone,
+            equipment: getWorkbookRowValue(row, orderHeaderMap, ["equipamento"]),
+            defect: getWorkbookRowValue(row, orderHeaderMap, ["defeito"]),
+            technicianName: getWorkbookRowValue(row, orderHeaderMap, ["tecnico"]),
+            orderStatus: getWorkbookRowValue(row, orderHeaderMap, ["status_os"]) || "ABERTA",
+            approvalStatus: getWorkbookRowValue(row, orderHeaderMap, ["status_aprovacao"]) || "AGUARDANDO_APROVACAO",
+            quoteAmount: toWorkbookNumber(getWorkbookRowValue(row, orderHeaderMap, ["total"])),
+            serviceAmount: toWorkbookNumber(getWorkbookRowValue(row, orderHeaderMap, ["total"])),
+            totalAmount: toWorkbookNumber(getWorkbookRowValue(row, orderHeaderMap, ["total"])),
+            openedAt: parseWorkbookDate(getWorkbookRowValue(row, orderHeaderMap, ["aberto_em"]), timestamp.slice(0, 10)),
+            concludedAt: parseWorkbookDate(getWorkbookRowValue(row, orderHeaderMap, ["concluido_em"]), ""),
+            createdAt: timestamp,
+            updatedAt: getWorkbookRowValue(row, orderHeaderMap, ["atualizado_em"]) || timestamp
+          }
+        );
+        const insertedId = id || Number(get("SELECT id FROM orders WHERE code = :code ORDER BY id DESC LIMIT 1", { code })?.id || 0);
+        orderMap.set(String(id || insertedId), insertedId);
+        orderMap.set(legacySlug(code), insertedId);
+      }
+      summary.sheets["Ordens Servico"] = orderRows.length - 1;
+
+      const salesRows = getWorkbookRows(salesSheet);
+      const salesHeaderMap = buildHeaderMap(salesRows[0] || []);
+      const sessionResult = run(
+        `
+          INSERT INTO cash_sessions (
+            id, user_id, opened_by_user_id, store_id, operator_name, opening_amount, closing_amount, expected_amount,
+            notes, status, opened_at, closed_at, created_at, updated_at
+          )
+          VALUES (
+            1, :userId, :openedByUserId, :storeId, :operatorName, 0, 0, 0,
+            :notes, 'OPEN', :openedAt, '', :createdAt, :updatedAt
+          )
+        `,
+        {
+          userId: fallbackUserId || 1,
+          openedByUserId: fallbackUserId || 1,
+          storeId: store.id,
+          operatorName: store.short_name || store.name || "Loja",
+          notes: `Importado de ${fileName}`,
+          openedAt: timestamp.slice(0, 10),
+          createdAt: timestamp,
+          updatedAt: timestamp
+        }
+      );
+      const sessionId = Number(sessionResult.lastInsertRowid || 1) || 1;
+
+      for (let rowIndex = 1; rowIndex < salesRows.length; rowIndex += 1) {
+        const row = salesRows[rowIndex] || [];
+        const id = Number(getWorkbookRowValue(row, salesHeaderMap, ["id"]) || 0);
+        const code = getWorkbookRowValue(row, salesHeaderMap, ["codigo"]);
+        if (!code) {
+          continue;
+        }
+        const createdAt = getWorkbookRowValue(row, salesHeaderMap, ["criado_em"]) || timestamp;
+        const saleClientName = getWorkbookRowValue(row, salesHeaderMap, ["cliente"]);
+        const clientId = clientMap.get(legacySlug(saleClientName)) || null;
+        run(
+          `
+            INSERT INTO pos_sales (
+              id, code, cash_session_id, user_id, client_id, client_name, subtotal_amount, discount_amount,
+              total_amount, notes, created_at, updated_at, discount_mode, discount_value, store_id
+            )
+            VALUES (
+              :id, :code, :cashSessionId, :userId, :clientId, :clientName, :subtotalAmount, :discountAmount,
+              :totalAmount, '', :createdAt, :updatedAt, 'AMOUNT', :discountValue, :storeId
+            )
+          `,
+          {
+            id: id || null,
+            code,
+            cashSessionId: sessionId,
+            userId: fallbackUserId || 1,
+            clientId,
+            clientName: saleClientName,
+            subtotalAmount: toWorkbookNumber(getWorkbookRowValue(row, salesHeaderMap, ["subtotal"])),
+            discountAmount: toWorkbookNumber(getWorkbookRowValue(row, salesHeaderMap, ["desconto"])),
+            totalAmount: toWorkbookNumber(getWorkbookRowValue(row, salesHeaderMap, ["total"])),
+            createdAt,
+            updatedAt: createdAt,
+            discountValue: toWorkbookNumber(getWorkbookRowValue(row, salesHeaderMap, ["desconto"])),
+            storeId: store.id
+          }
+        );
+        const insertedId = id || Number(get("SELECT id FROM pos_sales WHERE code = :code ORDER BY id DESC LIMIT 1", { code })?.id || 0);
+        saleMap.set(String(id || insertedId), insertedId);
+        saleMap.set(legacySlug(code), insertedId);
+      }
+      summary.sheets["Vendas PDV"] = salesRows.length - 1;
+
+      const salesItemsRows = getWorkbookRows(salesItemsSheet);
+      const salesItemsHeaderMap = buildHeaderMap(salesItemsRows[0] || []);
+      for (let rowIndex = 1; rowIndex < salesItemsRows.length; rowIndex += 1) {
+        const row = salesItemsRows[rowIndex] || [];
+        const id = Number(getWorkbookRowValue(row, salesItemsHeaderMap, ["id"]) || 0);
+        const saleCode = getWorkbookRowValue(row, salesItemsHeaderMap, ["codigo_venda"]);
+        const saleId = saleMap.get(legacySlug(saleCode)) || Number(getWorkbookRowValue(row, salesItemsHeaderMap, ["venda_id"]) || 0) || null;
+        const itemType = normalizeText(getWorkbookRowValue(row, salesItemsHeaderMap, ["tipo_item"]), "PRODUCT") || "PRODUCT";
+        const catalogIdText = getWorkbookRowValue(row, salesItemsHeaderMap, ["catalogo_id"]);
+        const catalogItemId = catalogIdText ? Number(catalogIdText) : null;
+        const serviceIdText = getWorkbookRowValue(row, salesItemsHeaderMap, ["servico_id"]);
+        const serviceId = serviceIdText ? Number(serviceIdText) : null;
+        if (!saleId) {
+          continue;
+        }
+        run(
+          `
+            INSERT INTO pos_sale_items (
+              id, sale_id, catalog_item_id, service_catalog_id, item_type, item_name, sku, quantity, unit_cost,
+              unit_price, line_total, created_at
+            )
+            VALUES (
+              :id, :saleId, :catalogItemId, :serviceCatalogId, :itemType, :itemName, :sku, :quantity, :unitCost,
+              :unitPrice, :lineTotal, :createdAt
+            )
+          `,
+          {
+            id: id || null,
+            saleId,
+            catalogItemId,
+            serviceCatalogId: serviceId,
+            itemType,
+            itemName: getWorkbookRowValue(row, salesItemsHeaderMap, ["descricao"]),
+            sku: "",
+            quantity: Math.max(1, Math.trunc(toWorkbookNumber(getWorkbookRowValue(row, salesItemsHeaderMap, ["quantidade"]), 1))),
+            unitCost: toWorkbookNumber(getWorkbookRowValue(row, salesItemsHeaderMap, ["custo_unitario"])),
+            unitPrice: toWorkbookNumber(getWorkbookRowValue(row, salesItemsHeaderMap, ["preco_unitario"])),
+            lineTotal: toWorkbookNumber(getWorkbookRowValue(row, salesItemsHeaderMap, ["total_linha"])),
+            createdAt: timestamp
+          }
+        );
+      }
+      summary.sheets["Itens PDV"] = Math.max(0, salesItemsRows.length - 1);
+
+      const paymentsRows = getWorkbookRows(paymentsSheet);
+      const paymentsHeaderMap = buildHeaderMap(paymentsRows[0] || []);
+      for (let rowIndex = 1; rowIndex < paymentsRows.length; rowIndex += 1) {
+        const row = paymentsRows[rowIndex] || [];
+        const id = Number(getWorkbookRowValue(row, paymentsHeaderMap, ["id"]) || 0);
+        const saleCode = getWorkbookRowValue(row, paymentsHeaderMap, ["codigo_venda"]);
+        const saleId = saleMap.get(legacySlug(saleCode)) || Number(getWorkbookRowValue(row, paymentsHeaderMap, ["venda_id"]) || 0) || null;
+        if (!saleId) {
+          continue;
+        }
+        run(
+          `
+            INSERT INTO pos_payments (
+              id, sale_id, payment_method, amount, created_at
+            )
+            VALUES (
+              :id, :saleId, :paymentMethod, :amount, :createdAt
+            )
+          `,
+          {
+            id: id || null,
+            saleId,
+            paymentMethod: getWorkbookRowValue(row, paymentsHeaderMap, ["forma_pagamento"]) || "CAIXINHA_LOJA",
+            amount: toWorkbookNumber(getWorkbookRowValue(row, paymentsHeaderMap, ["valor"])),
+            createdAt: getWorkbookRowValue(row, paymentsHeaderMap, ["criado_em"]) || timestamp
+          }
+        );
+      }
+      summary.sheets["Pagamentos PDV"] = Math.max(0, paymentsRows.length - 1);
+
+      const financeRows = getWorkbookRows(financeSheet);
+      const financeHeaderMap = buildHeaderMap(financeRows[0] || []);
+      for (let rowIndex = 1; rowIndex < financeRows.length; rowIndex += 1) {
+        const row = financeRows[rowIndex] || [];
+        const id = Number(getWorkbookRowValue(row, financeHeaderMap, ["id"]) || 0);
+        const description = getWorkbookRowValue(row, financeHeaderMap, ["descricao"]);
+        if (!description) {
+          continue;
+        }
+        const orderRef = getWorkbookRowValue(row, financeHeaderMap, ["codigo_os"]);
+        const orderId = orderMap.get(legacySlug(orderRef)) || Number(getWorkbookRowValue(row, financeHeaderMap, ["pedido_id"]) || 0) || null;
+        const cashAccountCode = normalizeText(getWorkbookRowValue(row, financeHeaderMap, ["conta_caixa_codigo"]), "").toUpperCase();
+        const cashAccountId = accountMap.get(cashAccountCode) || null;
+        const saleCodeMatch = description.match(/Venda\s+(PDV-\d{8}-\d{4})/i);
+        const rawPayload = getWorkbookRowValue(row, financeHeaderMap, ["payload_bruto"]);
+        run(
+          `
+            INSERT INTO finance_entries (
+              id, entry_type, category, description, amount, entry_date, payment_method, order_id, created_at,
+              updated_at, store_id, cash_account_id, raw_payload, source_workbook, source_sheet, source_row, legacy_section
+            )
+            VALUES (
+              :id, :entryType, :category, :description, :amount, :entryDate, :paymentMethod, :orderId, :createdAt,
+              :updatedAt, :storeId, :cashAccountId, :rawPayload, :sourceWorkbook, :sourceSheet, :sourceRow, :legacySection
+            )
+          `,
+          {
+            id: id || null,
+            entryType: getWorkbookRowValue(row, financeHeaderMap, ["tipo"]) || "RECEITA",
+            category: getWorkbookRowValue(row, financeHeaderMap, ["categoria"]) || "Outras receitas",
+            description,
+            amount: toWorkbookNumber(getWorkbookRowValue(row, financeHeaderMap, ["valor"])),
+            entryDate: parseWorkbookDate(getWorkbookRowValue(row, financeHeaderMap, ["data_lancamento"]), timestamp.slice(0, 10)),
+            paymentMethod: getWorkbookRowValue(row, financeHeaderMap, ["forma_pagamento"]) || "NAO_DEFINIDO",
+            orderId,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            storeId: store.id,
+            cashAccountId,
+            rawPayload: rawPayload || JSON.stringify({
+              source: "ODS_IMPORT",
+              saleCode: saleCodeMatch?.[1] || ""
+            }),
+            sourceWorkbook: fileName,
+            sourceSheet: "Lancamentos",
+            sourceRow: rowIndex + 1,
+            legacySection: getWorkbookRowValue(row, financeHeaderMap, ["secao_legada"]) || "ENTRADAS_SAIDAS"
+          }
+        );
+        const insertedId = id || Number(get("SELECT id FROM finance_entries ORDER BY id DESC LIMIT 1")?.id || 0);
+        financeMap.set(String(id || insertedId), insertedId);
+        financeMap.set(legacySlug(description), insertedId);
+        if (orderRef) {
+          financeMap.set(legacySlug(`Venda ${orderRef}`), insertedId);
+        }
+      }
+      summary.sheets["Lancamentos"] = financeRows.length - 1;
+
+      const movementRows = getWorkbookRows(movementsSheet);
+      const movementHeaderMap = buildHeaderMap(movementRows[0] || []);
+      for (let rowIndex = 1; rowIndex < movementRows.length; rowIndex += 1) {
+        const row = movementRows[rowIndex] || [];
+        const id = Number(getWorkbookRowValue(row, movementHeaderMap, ["id"]) || 0);
+        const description = getWorkbookRowValue(row, movementHeaderMap, ["descricao"]);
+        if (!description) {
+          continue;
+        }
+        const saleCode = getWorkbookRowValue(row, movementHeaderMap, ["venda_pdv_codigo"]);
+        const saleId = saleMap.get(legacySlug(saleCode)) || null;
+        const cashAccountCode = normalizeText(getWorkbookRowValue(row, movementHeaderMap, ["conta_caixa_codigo"]), "").toUpperCase();
+        const cashAccountId = accountMap.get(cashAccountCode) || null;
+        const matchingFinanceId = saleCode
+          ? financeMap.get(legacySlug(`Venda ${saleCode}`))
+          : financeMap.get(legacySlug(description)) || null;
+        run(
+          `
+            INSERT INTO store_cash_movements (
+              id, store_id, cash_session_id, finance_entry_id, sale_id, cash_account_id, movement_type, entry_type,
+              description, amount, movement_date, actor_user_id, actor_name, raw_payload, created_at, updated_at,
+              source_workbook, source_sheet, source_row, legacy_section
+            )
+            VALUES (
+              :id, :storeId, :cashSessionId, :financeEntryId, :saleId, :cashAccountId, :movementType, :entryType,
+              :description, :amount, :movementDate, :actorUserId, :actorName, :rawPayload, :createdAt, :updatedAt,
+              :sourceWorkbook, :sourceSheet, :sourceRow, :legacySection
+            )
+          `,
+          {
+            id: id || null,
+            storeId: store.id,
+            cashSessionId: sessionId,
+            financeEntryId: matchingFinanceId || null,
+            saleId,
+            cashAccountId,
+            movementType: getWorkbookRowValue(row, movementHeaderMap, ["tipo_movimento"]) || "FINANCE_ENTRY",
+            entryType: getWorkbookRowValue(row, movementHeaderMap, ["tipo_lancamento"]) || "RECEITA",
+            description,
+            amount: toWorkbookNumber(getWorkbookRowValue(row, movementHeaderMap, ["valor"])),
+            movementDate: parseWorkbookDate(getWorkbookRowValue(row, movementHeaderMap, ["data_movimento"]), timestamp.slice(0, 10)),
+            actorUserId: fallbackUserId,
+            actorName: fallbackUserName,
+            rawPayload: getWorkbookRowValue(row, movementHeaderMap, ["payload_bruto"]) || JSON.stringify({ saleCode }),
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            sourceWorkbook: getWorkbookRowValue(row, movementHeaderMap, ["workbook_origem"]) || fileName,
+            sourceSheet: getWorkbookRowValue(row, movementHeaderMap, ["aba_origem"]) || "Movimentos Caixa",
+            sourceRow: Number(getWorkbookRowValue(row, movementHeaderMap, ["linha_origem"]) || rowIndex + 1),
+            legacySection: getWorkbookRowValue(row, movementHeaderMap, ["secao_legada"]) || "ENTRADAS_SAIDAS"
+          }
+        );
+      }
+      summary.sheets["Movimentos Caixa"] = movementRows.length - 1;
+
+      run(
+        `
+          UPDATE store_cash_accounts
+          SET baseline_amount = :baselineAmount,
+              balance_amount = :balanceAmount,
+              updated_at = :updatedAt
+          WHERE store_id = :storeId
+        `,
+        {
+          baselineAmount: 0,
+          balanceAmount: 0,
+          updatedAt: timestamp,
+          storeId: store.id
+        }
+      );
+      for (const [code, values] of accountSnapshotValues.entries()) {
+        run(
+          `
+            UPDATE store_cash_accounts
+            SET baseline_amount = :baselineAmount,
+                balance_amount = :balanceAmount,
+                updated_at = :updatedAt
+            WHERE store_id = :storeId AND code = :code
+          `,
+          {
+            storeId: store.id,
+            code,
+            baselineAmount: values.baselineAmount,
+            balanceAmount: values.balanceAmount,
+            updatedAt: timestamp
+          }
+        );
+      }
+
+      for (const sheetName of requiredSheets) {
+        if (!summary.sheets[sheetName]) {
+          summary.sheets[sheetName] = 0;
+        }
+      }
+
+      db.exec("COMMIT");
+      db.exec("PRAGMA foreign_keys = ON");
+      repo.syncCatalogStockBatches();
+      writeAuditLog(actor, "SYSTEM_TRANSFER", null, "ODS_IMPORT", null, summary, {
+        fileName,
+        importedAt: summary.importedAt
+      });
+      finalizeLegacyImportRun(importRunId, summary);
+      return summary;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      db.exec("PRAGMA foreign_keys = ON");
+      throw error;
     }
-    const header = columns.length ? columns : ["sem_dados"];
-    const body = normalizedRows.length
-      ? normalizedRows.map((row) => header.map((column) => row?.[column] ?? ""))
-      : [["Nenhum registro encontrado."]];
-    return {
-      name,
-      rows: [header, ...body]
-    };
   }
 
   async function backupToMysql(payload = {}) {
@@ -6622,15 +7387,3 @@ export function createAppRepository(options = {}) {
     };
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
