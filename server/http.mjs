@@ -603,6 +603,23 @@ export function createApiServer(repo, options = {}) {
         });
       }
 
+      if (pathname === "/api/system-transfer/backup/ods" && method === "POST") {
+        ensureRole(user, ["ADMIN", "GERENTE"]);
+        const body = await readJsonBody(request);
+        const exported = repo.exportBackupOds({ ...body, _actor: user });
+        return sendBinary(response, 200, exported.buffer, {
+          "Content-Type": "application/vnd.oasis.opendocument.spreadsheet",
+          "Content-Disposition": `attachment; filename="${exported.fileName}"`,
+          "Content-Length": exported.buffer.length
+        });
+      }
+
+      if (pathname === "/api/system-transfer/import/backup-ods" && method === "POST") {
+        ensureRole(user, ["ADMIN", "GERENTE"]);
+        const body = await readJsonBody(request);
+        return sendJson(response, 200, { data: repo.importBackupOds({ ...body, _actor: user }) });
+      }
+
       if (pathname === "/api/system-transfer/export/ods" && method === "POST") {
         ensureRole(user, ["ADMIN", "GERENTE"]);
         const body = await readJsonBody(request);

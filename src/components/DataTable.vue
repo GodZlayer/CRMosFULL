@@ -280,6 +280,10 @@ const props = defineProps({
   printSummaryFields: {
     type: Array as PropType<PrintSummaryField[]>,
     default: () => []
+  },
+  preferencesVersion: {
+    type: String,
+    default: "v1"
   }
 });
 
@@ -443,7 +447,7 @@ function slugify(value: string) {
 }
 
 function storageScope() {
-  return `${slugify(props.eyebrow)}:${slugify(props.title)}`;
+  return `${slugify(props.eyebrow)}:${slugify(props.title)}:${slugify(props.preferencesVersion)}`;
 }
 
 function pageSizeStorageKey() {
@@ -1342,7 +1346,7 @@ watch(
     if (isCardMode.value) {
       void queueTableRender();
     } else {
-      applyTableQuickFilter();
+      void queueTableRender();
     }
   }
 );

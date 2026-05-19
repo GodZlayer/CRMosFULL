@@ -68,7 +68,7 @@
  <MetricCard title="Estoque por venda" :value="currency(stockSaleValue)" hint="Valor de venda total dos itens visíveis no filtro atual." icon="fa-solid fa-warehouse" tone="success" />
  </div>
  <div class="col-lg-3 col-md-6">
- <MetricCard title="Abaixo do mínimo" :value="lowStockCount" hint="Itens pedindo reposição ou atenão de compra." icon="fa-solid fa-triangle-exclamation" tone="danger" />
+ <MetricCard title="Reposição" :value="lowStockCount" hint="Itens pedindo reposição ou atenção de compra." icon="fa-solid fa-triangle-exclamation" tone="danger" />
  </div>
  <div class="col-lg-3 col-md-6">
  <MetricCard title="Margem média" :value="averageProfitLabel" hint="Percentual médio de lucro dos itens visíveis na listagem." icon="fa-solid fa-percent" tone="warning" />
@@ -84,6 +84,7 @@
  :allow-csv="true"
  :allow-print="true"
  :allow-auto-columns="false"
+ preferences-version="estoque-v2"
  :print-summary-fields="inventoryPrintSummaryFields"
  :selectable-rows="true"
  :selected-row-keys="selectedIds"
@@ -830,12 +831,6 @@ const columns = [
  }
  },
  {
- title: "SKU / código de barras",
- field: "sku",
- minWidth: 180,
- formatter: (cell: any) => String(cell.getValue() || "-")
- },
- {
  title: "Nome / descrição",
  field: "name",
  minWidth: 320,
@@ -848,14 +843,21 @@ const columns = [
  return `<div><div class="fw-semibold">${row.name}</div>${brand}${description}</div>`;
  }
  },
- { title: "Qnt mínima", field: "min_stock", hozAlign: "center", minWidth: 110 },
- { title: "Qnt atual", field: "stock_quantity", hozAlign: "center", minWidth: 110 },
- { title: "Total custo", field: "stock_cost_value", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) },
- { title: "Total venda", field: "stock_value", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) },
+ { title: "Custo unidade", field: "cost_amount", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) },
+ { title: "Venda unidade", field: "price_amount", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) },
+ { title: "Quantidade mínima", field: "min_stock", hozAlign: "center", minWidth: 150 },
+ { title: "Quantidade atual", field: "stock_quantity", hozAlign: "center", minWidth: 150 },
+ {
+ title: "SKU / código de barras",
+ field: "sku",
+ minWidth: 180,
+ visible: false,
+ formatter: (cell: any) => String(cell.getValue() || "-")
+ },
+ { title: "Total custo", field: "stock_cost_value", hozAlign: "right", minWidth: 140, visible: false, formatter: (cell: any) => currency(cell.getValue()) },
+ { title: "Total venda", field: "stock_value", hozAlign: "right", minWidth: 140, visible: false, formatter: (cell: any) => currency(cell.getValue()) },
  { title: "Margem unit.", field: "unit_margin", hozAlign: "right", minWidth: 140, visible: false, formatter: (cell: any) => currency(cell.getValue()) },
  { title: "Lucro %", field: "profit_percent", hozAlign: "right", minWidth: 120, visible: false, formatter: (cell: any) => percentLabel(Number(cell.getValue() || 0)) },
- { title: "Compra atual", field: "cost_amount", hozAlign: "right", minWidth: 140, visible: false, formatter: (cell: any) => currency(cell.getValue()) },
- { title: "Venda atual", field: "price_amount", hozAlign: "right", minWidth: 140, visible: false, formatter: (cell: any) => currency(cell.getValue()) }
 ];
 
 const inventoryPrintSummaryFields = [

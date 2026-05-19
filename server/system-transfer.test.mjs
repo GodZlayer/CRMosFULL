@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAppRepository } from "./app-repository.mjs";
 import { parseOdsBuffer, parseOdsFile } from "./legacy-ods.mjs";
-import { buildMysqlCreateTableSql, createMysqlDumpFromSqlite, normalizeGoogleDocsOdsUrl } from "./system-transfer.mjs";
+import {
+  buildMysqlCreateTableSql,
+  createMysqlDumpFromSqlite,
+  exportSqliteBackupOds,
+  importSqliteBackupOds,
+  normalizeGoogleDocsOdsUrl
+} from "./system-transfer.mjs";
 
 test("normalizeGoogleDocsOdsUrl converts spreadsheet links to ods export", () => {
   const url = normalizeGoogleDocsOdsUrl("https://docs.google.com/spreadsheets/d/abc123/edit?gid=0#gid=0");
@@ -45,6 +51,52 @@ test("buildMysqlCreateTableSql uses varchar(255) for indexed text columns", () =
     assert.doesNotMatch(sql, /`key` LONGTEXT/);
   } finally {
     repo.close();
+  }
+});
+
+test("importSqliteBackupOds updates existing finance entries when merging backup", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "crm-backup-merge-"));
+  const repo = createAppRepository({
+    dbPath: ":memory:",
+    storageRoot: tempDir,
+    uploadsRoot: tempDir,
+    seedDemo: false
+  });
+
+  try {
+    const entry = repo.saveFinanceEntry({
+      entryType: "RECEITA",
+      category: "Outras receitas",
+      description: "Lancamento antes do backup",
+      amount: 123,
+      entryDate: "2026-05-19",
+      paymentMethod: "PIX",
+      registerStoreCashMovement: false,
+      _actor: { id: 1, name: "QA" }
+    });
+    const exported = exportSqliteBackupOds(repo.db, { actorName: "QA" });
+
+    repo.saveFinanceEntry({
+      id: entry.id,
+      entryType: "RECEITA",
+      category: "Outras receitas",
+      description: "Lancamento alterado localmente",
+      amount: 999,
+      entryDate: "2026-05-19",
+      paymentMethod: "PIX",
+      registerStoreCashMovement: false,
+      _actor: { id: 1, name: "QA" }
+    });
+
+    const result = importSqliteBackupOds(repo.db, exported.buffer, { clearExisting: false });
+    const restored = repo.listFinanceEntries({}).find((item) => Number(item.id) === Number(entry.id));
+
+    assert.ok(result.totalRows > 0);
+    assert.equal(restored.description, "Lancamento antes do backup");
+    assert.equal(Number(restored.amount), 123);
+  } finally {
+    repo.close();
+    rmSync(tempDir, { recursive: true, force: true });
   }
 });
 

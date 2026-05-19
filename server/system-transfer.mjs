@@ -125,6 +125,38 @@ function toBackupSheetRows(columns = [], rows = []) {
   return [header, ...body];
 }
 
+function buildSqliteInsertSql(tableName, columns = [], options = {}) {
+  const quotedColumns = columns.map((column) => escapeIdentifier(column));
+  const placeholders = columns.map((column) => `:${column}`);
+  const baseSql = `INSERT INTO ${escapeIdentifier(tableName)} (${quotedColumns.join(", ")}) VALUES (${placeholders.join(", ")})`;
+  const pkColumns = options.pkColumns || [];
+
+  if (!options.upsert || !pkColumns.length || !pkColumns.every((column) => columns.includes(column))) {
+    return baseSql;
+  }
+
+  const updateColumns = columns.filter((column) => !pkColumns.includes(column));
+  if (!updateColumns.length) {
+    return `${baseSql} ON CONFLICT (${pkColumns.map((column) => escapeIdentifier(column)).join(", ")}) DO NOTHING`;
+  }
+
+  return `${baseSql} ON CONFLICT (${pkColumns.map((column) => escapeIdentifier(column)).join(", ")}) DO UPDATE SET ${updateColumns
+    .map((column) => `${escapeIdentifier(column)} = excluded.${escapeIdentifier(column)}`)
+    .join(", ")}`;
+}
+
+function syncSqliteSequences(db, tables = []) {
+  for (const tableName of tables) {
+    const pkColumn = getSqliteTableColumns(db, tableName).find((column) => column.pk === 1 && String(column.type || "").toUpperCase().includes("INT"));
+    if (!pkColumn) {
+      continue;
+    }
+    const maxId = sqliteAll(db, `SELECT COALESCE(MAX(${escapeIdentifier(pkColumn.name)}), 0) AS maxId FROM ${escapeIdentifier(tableName)}`)[0]?.maxId || 0;
+    sqliteRun(db, "UPDATE sqlite_sequence SET seq = :seq WHERE name = :name", { seq: Number(maxId || 0), name: tableName });
+    sqliteRun(db, "INSERT INTO sqlite_sequence(name, seq) SELECT :name, :seq WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = :name)", { seq: Number(maxId || 0), name: tableName });
+  }
+}
+
 export function exportSqliteBackupOds(db, options = {}) {
   const exportedAt = String(options.exportedAt || new Date().toISOString());
   const actorName = String(options.actorName || "Sistema");
@@ -223,8 +255,11 @@ export function importSqliteBackupOds(db, input, options = {}) {
         continue;
       }
 
-      const placeholders = insertColumns.map((column) => `:${column}`).join(", ");
-      const insertSql = `INSERT INTO ${escapeIdentifier(tableName)} (${insertColumns.map((column) => escapeIdentifier(column)).join(", ")}) VALUES (${placeholders})`;
+      const pkColumns = columns.filter((column) => column.pk).sort((a, b) => a.pk - b.pk).map((column) => column.name);
+      const insertSql = buildSqliteInsertSql(tableName, insertColumns, {
+        upsert: !clearExisting,
+        pkColumns
+      });
       const insert = db.prepare(insertSql);
       let importedRows = 0;
 
@@ -255,15 +290,7 @@ export function importSqliteBackupOds(db, input, options = {}) {
       summary.push({ table: tableName, rows: importedRows });
     }
 
-    for (const tableName of tables) {
-      const pkColumn = getSqliteTableColumns(db, tableName).find((column) => column.pk === 1 && String(column.type || "").toUpperCase().includes("INT"));
-      if (!pkColumn) {
-        continue;
-      }
-      const maxId = sqliteAll(db, `SELECT COALESCE(MAX(${escapeIdentifier(pkColumn.name)}), 0) AS maxId FROM ${escapeIdentifier(tableName)}`)[0]?.maxId || 0;
-      sqliteRun(db, "UPDATE sqlite_sequence SET seq = :seq WHERE name = :name", { seq: Number(maxId || 0), name: tableName });
-      sqliteRun(db, "INSERT INTO sqlite_sequence(name, seq) SELECT :name, :seq WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = :name)", { seq: Number(maxId || 0), name: tableName });
-    }
+    syncSqliteSequences(db, tables);
 
     db.exec("COMMIT");
   } catch (error) {
@@ -586,10 +613,12 @@ export async function importMysqlToSqlite(db, payload = {}) {
           continue;
         }
 
-        const sql = `
-          INSERT INTO ${tableName} (${commonColumns.join(", ")})
-          VALUES (${commonColumns.map((column) => `:${column}`).join(", ")})
-        `;
+        const tableColumns = sqliteAll(db, `PRAGMA table_info(${tableName})`);
+        const pkColumns = tableColumns.filter((column) => column.pk).sort((a, b) => a.pk - b.pk).map((column) => column.name);
+        const sql = buildSqliteInsertSql(tableName, commonColumns, {
+          upsert: payload.clearExisting === false,
+          pkColumns
+        });
         for (const row of rows) {
           const params = Object.fromEntries(commonColumns.map((column) => [column, normalizeSqliteValue(row[column])]));
           sqliteRun(db, sql, params);
@@ -597,6 +626,7 @@ export async function importMysqlToSqlite(db, payload = {}) {
         summary.push({ table: tableName, rows: rows.length });
       }
 
+      syncSqliteSequences(db, importTables);
       db.exec("COMMIT;");
     } catch (error) {
       db.exec("ROLLBACK;");

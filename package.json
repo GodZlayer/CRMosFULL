@@ -9,6 +9,7 @@
         "dev:api": "node --watch --experimental-sqlite server/dev-api.mjs",
         "build": "vite build",
         "preview": "vite preview --host 0.0.0.0 --port 4173",
+        "start": "node --experimental-sqlite server/prod-server.mjs",
         "test": "node --experimental-sqlite --test server/*.test.mjs",
         "seed": "node --experimental-sqlite server/dev-api.mjs --seed-only",
         "data:clear": "node --experimental-sqlite scripts/clear-data.mjs",

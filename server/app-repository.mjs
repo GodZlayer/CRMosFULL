@@ -22,7 +22,9 @@ import {
   cleanupDownloadedSources,
   createMysqlDumpFromSqlite,
   downloadLegacyWorkbookSources,
+  exportSqliteBackupOds,
   importMysqlToSqlite,
+  importSqliteBackupOds,
 } from "./system-transfer.mjs";
 import { createOdsWorkbook } from "./ods-export.mjs";
 import {
@@ -220,6 +222,8 @@ export function createAppRepository(options = {}) {
     importLegacyOds,
     importOperationalOds,
     exportOperationalOds,
+    exportBackupOds,
+    importBackupOds,
     backupToMysql,
     createMysqlDump,
     importFromMysql,
@@ -6774,12 +6778,17 @@ export function createAppRepository(options = {}) {
 
       const financeRows = getWorkbookRows(financeSheet);
       const financeHeaderMap = buildHeaderMap(financeRows[0] || []);
+      const usedFinanceIds = new Set();
       for (let rowIndex = 1; rowIndex < financeRows.length; rowIndex += 1) {
         const row = financeRows[rowIndex] || [];
         const id = Number(getWorkbookRowValue(row, financeHeaderMap, ["id"]) || 0);
+        const insertId = id && !usedFinanceIds.has(id) ? id : null;
         const description = getWorkbookRowValue(row, financeHeaderMap, ["descricao"]);
         if (!description) {
           continue;
+        }
+        if (insertId) {
+          usedFinanceIds.add(insertId);
         }
         const orderRef = getWorkbookRowValue(row, financeHeaderMap, ["codigo_os"]);
         const orderId = orderMap.get(legacySlug(orderRef)) || Number(getWorkbookRowValue(row, financeHeaderMap, ["pedido_id"]) || 0) || null;
@@ -6799,7 +6808,7 @@ export function createAppRepository(options = {}) {
             )
           `,
           {
-            id: id || null,
+            id: insertId,
             entryType: getWorkbookRowValue(row, financeHeaderMap, ["tipo"]) || "RECEITA",
             category: getWorkbookRowValue(row, financeHeaderMap, ["categoria"]) || "Outras receitas",
             description,
@@ -6821,8 +6830,11 @@ export function createAppRepository(options = {}) {
             legacySection: getWorkbookRowValue(row, financeHeaderMap, ["secao_legada"]) || "ENTRADAS_SAIDAS"
           }
         );
-        const insertedId = id || Number(get("SELECT id FROM finance_entries ORDER BY id DESC LIMIT 1")?.id || 0);
-        financeMap.set(String(id || insertedId), insertedId);
+        const insertedId = insertId || Number(get("SELECT id FROM finance_entries ORDER BY id DESC LIMIT 1")?.id || 0);
+        if (id && !financeMap.has(String(id))) {
+          financeMap.set(String(id), insertedId);
+        }
+        financeMap.set(String(insertedId), insertedId);
         financeMap.set(legacySlug(description), insertedId);
         if (orderRef) {
           financeMap.set(legacySlug(`Venda ${orderRef}`), insertedId);
@@ -6958,6 +6970,44 @@ export function createAppRepository(options = {}) {
       fileName: summary.fileName,
       totalRows: summary.totalRows,
       databaseName: summary.databaseName
+    });
+    return summary;
+  }
+
+  function exportBackupOds(payload = {}) {
+    const actor = payload._actor || payload.actor;
+    const actorName = normalizeActor(actor).actorName || "Sistema";
+    const summary = exportSqliteBackupOds(db, {
+      actorName,
+      fileName: payload.fileName
+    });
+    writeAuditLog(actor, "SYSTEM_TRANSFER", null, "ODS_BACKUP_EXPORT", null, {
+      fileName: summary.fileName,
+      totalRows: summary.totalRows,
+      exportedAt: summary.exportedAt
+    }, {
+      fileName: summary.fileName,
+      totalRows: summary.totalRows
+    });
+    return summary;
+  }
+
+  function importBackupOds(payload = {}) {
+    const actor = payload._actor || payload.actor;
+    const contentBase64 = normalizeText(payload.contentBase64 || payload.content || "");
+    if (!contentBase64) {
+      throw new Error("Envie um arquivo ODS para importar.");
+    }
+    const summary = importSqliteBackupOds(db, Buffer.from(contentBase64, "base64"), {
+      fileName: payload.fileName,
+      clearExisting: payload.clearExisting !== false
+    });
+    syncStores();
+    syncCompanyProfiles();
+    syncLowStockNotifications();
+    writeAuditLog(actor, "SYSTEM_TRANSFER", null, "ODS_BACKUP_IMPORT", null, summary, {
+      fileName: summary.fileName,
+      totalRows: summary.totalRows
     });
     return summary;
   }

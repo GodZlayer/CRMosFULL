@@ -13,7 +13,26 @@ CRM interno para ordem de servico, clientes, catalogo, estoque, financeiro leve,
 - `npm install`
 - `npm run dev`
 - `npm run build`
+- `npm start`
 - `npm test`
+
+## Docker
+
+Para subir a aplicacao em container:
+
+```bash
+docker compose up --build
+```
+
+Depois acesse `http://localhost:3000`.
+
+O `docker-compose.yml` sobe tres servicos no projeto `crmosfull`:
+
+- `frontend`: Nginx servindo o build Vite e proxyando `/api` e `/uploads`.
+- `server`: API Node.js.
+- `postgres`: banco PostgreSQL provisionado para a migracao da persistencia.
+
+O volume `crm-storage` ainda persiste o SQLite e uploads usados pelo backend atual em `/app/server/storage`. O volume `postgres-data` guarda os dados do PostgreSQL. A aplicacao ainda usa SQLite internamente porque o repositorio de dados atual usa `node:sqlite`; a troca real para Postgres exige migrar a camada de persistencia.
 
 ## Acesso demo
 
