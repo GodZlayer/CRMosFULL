@@ -104,6 +104,8 @@ export interface CatalogItem {
   name: string;
   brand: string;
   description: string;
+  photo_path?: string;
+  photo_url?: string;
   category: string;
   subcategory: string;
   compatibility: string;
@@ -126,6 +128,13 @@ export interface CatalogItem {
   open_quantity: number;
   last_order_code: string;
   last_used_at: string;
+  replenishment_count?: number;
+  last_replenishment_at?: string;
+  last_replenishment_quantity?: number;
+  last_replenishment_actor?: string;
+  last_replenishment_notes?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface CatalogUsageHistory {

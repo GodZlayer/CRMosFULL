@@ -708,6 +708,7 @@ const orderAttachments = ref<MediaUploadPayload[]>([]);
 const existingOrderAttachmentPreviews = ref<Array<{ url: string; name?: string }>>([]);
 const clientMode = ref<"existing" | "new">("existing");
 const createRouteToken = ref("");
+const sourceTaskId = ref(0);
 const currentOrderStatus = ref("ABERTA");
 const fallbackPaymentMethods = [
  { code: "CC_PIX_PJ_MAQ_VERM", label: "C/C pix PJ e maq verm" },
@@ -982,6 +983,7 @@ function resetForm() {
  clientMode.value = "existing";
  orderAttachments.value = [];
  existingOrderAttachmentPreviews.value = [];
+ sourceTaskId.value = 0;
  activeStep.value = 0;
 }
 
@@ -1151,6 +1153,49 @@ function openCreate() {
  resetForm();
  restoreDraft();
  showForm.value = true;
+}
+
+function parseMoneyLike(value: unknown) {
+ const raw = String(value || "").replace(/[^\d,.-]/g, "").replace(",", ".");
+ const parsed = Number(raw);
+ return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function applyTaskToCreateForm(task: any) {
+ sourceTaskId.value = Number(task?.id || 0);
+ const taskClientName = String(task?.client_name || task?.title || "").trim();
+ const taskPhone = String(task?.phone || "").trim();
+ const normalizedPhone = taskPhone.replace(/\D+/g, "");
+ const matchedClient = clients.value.find((client) => {
+  const clientPhone = String(client.phone || "").replace(/\D+/g, "");
+  const samePhone = normalizedPhone && clientPhone === normalizedPhone;
+  const sameName = taskClientName && String(client.name || "").trim().toLowerCase() === taskClientName.toLowerCase();
+  return samePhone || sameName;
+ });
+
+ if (matchedClient) {
+  clientMode.value = "existing";
+  form.clientId = Number(matchedClient.id);
+ } else {
+  clientMode.value = "new";
+  newClient.name = taskClientName || "Cliente da tarefa";
+  newClient.phone = taskPhone || "Sem telefone";
+  newClient.noAddress = true;
+ }
+
+ form.equipmentName = String(task?.device || "Item informado na tarefa");
+ form.defect = String(task?.description || task?.title || "Criado a partir de tarefa");
+ form.extras = String(task?.notes || "Sem observacoes informadas");
+ form.accessories = ["Sem acessórios"];
+ const valueAmount = Number(task?.value_amount || 0) || parseMoneyLike(task?.value_label);
+ if (valueAmount > 0) {
+  form.manualQuoteEnabled = true;
+  form.manualQuoteAmount = valueAmount;
+ }
+ if (task?.legacy_target_date || task?.task_date) {
+  form.manualDueDateEnabled = true;
+  form.dueDate = String(task.legacy_target_date || task.task_date).slice(0, 10);
+ }
 }
 
 async function openDetail(row: Record<string, unknown>) {
@@ -1373,7 +1418,8 @@ async function saveOrder() {
  items: form.items.filter((item) => item.catalogItemId).map((item) => ({ catalogItemId: item.catalogItemId, quantity: item.quantity })),
  services: form.services.filter((item) => item.serviceId).map((item) => ({ serviceId: item.serviceId, quantity: item.quantity })),
  requestedProducts: form.requestedProducts.filter((item) => item.name.trim()).map((item) => ({ id: item.id, name: item.name.trim(), quantity: item.quantity, salePrice: item.salePrice, purchaseCost: item.purchaseCost, purchaseCashAccountId: item.purchaseCashAccountId, status: item.status })),
-  photoUploads: orderAttachments.value
+  photoUploads: orderAttachments.value,
+  sourceTaskId: sourceTaskId.value || undefined
  });
 
  clearDraft(form.id || undefined);
@@ -1439,22 +1485,34 @@ async function maybeOpenCreateFromRoute() {
  return;
  }
 
- const token = String(route.query.createOrder || "") + "-" + String(route.query.clientId || "");
+ const token = String(route.query.createOrder || "") + "-" + String(route.query.clientId || "") + "-" + String(route.query.sourceTaskId || "");
  if (createRouteToken.value === token) {
  return;
  }
 
  createRouteToken.value = token;
- openCreate();
+ resetForm();
+ showForm.value = true;
  const clientId = Number(route.query.clientId || 0);
  if (clientId) {
  clientMode.value = "existing";
  form.clientId = clientId;
  }
+ const routeSourceTaskId = Number(route.query.sourceTaskId || 0);
+ if (routeSourceTaskId) {
+  const response = await api.task(routeSourceTaskId);
+  if (response.data.order_id) {
+   showForm.value = false;
+   await router.push({ name: "os-detalhe", params: { id: String(response.data.order_id) } });
+   return;
+  }
+  applyTaskToCreateForm(response.data);
+ }
 
  const nextQuery = { ...route.query } as Record<string, any>;
  delete nextQuery.createOrder;
  delete nextQuery.clientId;
+ delete nextQuery.sourceTaskId;
  await router.replace({ query: nextQuery });
 }
 

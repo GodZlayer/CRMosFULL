@@ -394,6 +394,18 @@ export function createApiServer(repo, options = {}) {
         return sendJson(response, 200, { data: repo.saveTaskUpdate(id, { ...body, _actor: user }) });
       }
 
+      if (pathname.match(/^\/api\/tasks\/\d+\/create-order$/) && method === "POST") {
+        const id = Number(pathname.split("/")[3]);
+        const body = await readJsonBody(request);
+        return sendJson(response, 200, { data: repo.createOrderFromTask(id, { ...body, storeId: store?.id || null, _store: store, _actor: user }) });
+      }
+
+      if (pathname.match(/^\/api\/tasks\/\d+\/purchase-items$/) && method === "POST") {
+        const id = Number(pathname.split("/")[3]);
+        const body = await readJsonBody(request);
+        return sendJson(response, 200, { data: repo.addTaskPurchaseItem(id, { ...body, storeId: store?.id || null, _store: store, _actor: user }) });
+      }
+
       if (pathname === "/api/finance-categories" && method === "GET") {
         return sendJson(response, 200, { data: repo.listFinanceCategories(searchParams.get("entryType") || "") });
       }
@@ -623,7 +635,7 @@ export function createApiServer(repo, options = {}) {
       if (pathname === "/api/system-transfer/export/ods" && method === "POST") {
         ensureRole(user, ["ADMIN", "GERENTE"]);
         const body = await readJsonBody(request);
-        const exported = repo.exportOperationalOds({ ...body, storeId: store?.id || null, _store: store, _actor: user });
+        const exported = repo.exportBackupOds({ ...body, storeId: store?.id || null, _store: store, _actor: user });
         return sendBinary(response, 200, exported.buffer, {
           "Content-Type": "application/vnd.oasis.opendocument.spreadsheet",
           "Content-Disposition": `attachment; filename="${exported.fileName}"`,

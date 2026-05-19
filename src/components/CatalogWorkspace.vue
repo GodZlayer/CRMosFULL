@@ -84,7 +84,7 @@
  :allow-csv="true"
  :allow-print="true"
  :allow-auto-columns="false"
- preferences-version="estoque-v2"
+ preferences-version="estoque-v3"
  :print-summary-fields="inventoryPrintSummaryFields"
  :selectable-rows="true"
  :selected-row-keys="selectedIds"
@@ -394,6 +394,14 @@
  <div class="small fw-semibold mb-3">Detalhes avançados</div>
  <BarcodeField v-model="form.sku" label="SKU ou código do item" helper="Campo opcional. Use digitação, imagem ou câmera quando fizer sentido." placeholder="Digite ou leia o SKU" />
  </div>
+ <MediaCaptureField
+ v-model="form.photoUpload"
+ :preview="form.photoPreview"
+ label="Imagem do item"
+ helper="Adicione uma foto do produto para facilitar identificação no estoque."
+ accept="image/*"
+ @preview-change="form.photoPreview = $event"
+ />
  <div v-if="showStockSetupFields" class="panel-card">
  <div class="small fw-semibold mb-3">Estoque inicial</div>
  <div class="row g-3">
@@ -680,13 +688,14 @@ import BarcodeField from "./BarcodeField.vue";
 import DataTable from "./DataTable.vue";
 import FilterDrawer from "./FilterDrawer.vue";
 import MetricCard from "./MetricCard.vue";
+import MediaCaptureField from "./MediaCaptureField.vue";
 import ModalDialog from "./ModalDialog.vue";
 import SelectionActionBar from "./SelectionActionBar.vue";
 import { api } from "../services/api";
 import { currency, labelFor, toneFor } from "../services/format";
 import { notifyError, notifySuccess } from "../services/ui";
 import { useSessionStore } from "../stores/session";
-import type { CatalogDeleteResult, CatalogItem, CatalogItemDetail, CatalogStockBatch, StockReplenishment } from "../services/types";
+import type { CatalogDeleteResult, CatalogItem, CatalogItemDetail, CatalogStockBatch, MediaUploadPayload, StockReplenishment } from "../services/types";
 
 const props = defineProps<{
  title: string;
@@ -740,9 +749,11 @@ const form = reactive({
  costAmount: 0,
  priceAmount: 0,
  active: true,
- locationType: props.storeInventoryOnly ? "INVENTARIO" : "ESTOQUE",
- generateFinanceEntry: false,
- cashAccountId: 0
+  locationType: props.storeInventoryOnly ? "INVENTARIO" : "ESTOQUE",
+  generateFinanceEntry: false,
+  cashAccountId: 0,
+  photoUpload: null as MediaUploadPayload | null,
+  photoPreview: ""
 });
 
 const restockForm = reactive({
@@ -847,6 +858,8 @@ const columns = [
  { title: "Venda unidade", field: "price_amount", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) },
  { title: "Quantidade mínima", field: "min_stock", hozAlign: "center", minWidth: 150 },
  { title: "Quantidade atual", field: "stock_quantity", hozAlign: "center", minWidth: 150 },
+ { title: "Adicionado em", field: "created_at", minWidth: 145, sorter: dateTimeSorter, formatter: (cell: any) => dateLabel(cell.getValue()) },
+ { title: "Reposto em", field: "last_replenishment_at", minWidth: 145, sorter: dateTimeSorter, formatter: (cell: any) => dateLabel(cell.getValue()) },
  {
  title: "SKU / código de barras",
  field: "sku",
@@ -890,6 +903,16 @@ const catalogCardFields = [
  key: "stock_value",
  label: "Total venda",
  value: (row: Record<string, unknown>) => currency(row.stock_value)
+ },
+ {
+ key: "created_at",
+ label: "Adicionado",
+ value: (row: Record<string, unknown>) => dateLabel(String(row.created_at || ""))
+ },
+ {
+ key: "last_replenishment_at",
+ label: "Reposto",
+ value: (row: Record<string, unknown>) => dateLabel(String(row.last_replenishment_at || ""))
  },
  {
  key: "description",
@@ -1007,6 +1030,25 @@ function dateLabel(value: string | null | undefined) {
  return parsed.toLocaleString("pt-BR");
 }
 
+function dateTimeSortValue(value: string | null | undefined) {
+ if (!value) {
+ return 0;
+ }
+ const parsed = new Date(String(value));
+ if (!Number.isNaN(parsed.getTime())) {
+ return parsed.getTime();
+ }
+ const dateOnly = String(value).slice(0, 10);
+ if (/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
+  return new Date(`${dateOnly}T00:00:00`).getTime();
+ }
+ return 0;
+}
+
+function dateTimeSorter(a: string | null | undefined, b: string | null | undefined) {
+ return dateTimeSortValue(a) - dateTimeSortValue(b);
+}
+
 function percentLabel(value: number | null | undefined) {
  return `${Number(value || 0).toFixed(2)}%`;
 }
@@ -1088,7 +1130,9 @@ function resetForm() {
  active: true,
  locationType: props.storeInventoryOnly ? "INVENTARIO" : "ESTOQUE",
  generateFinanceEntry: false,
- cashAccountId: defaultCashAccountId.value
+ cashAccountId: defaultCashAccountId.value,
+ photoUpload: null,
+ photoPreview: ""
  });
 }
 
@@ -1240,7 +1284,9 @@ function openEdit(row: Partial<CatalogItem>) {
  costAmount: Number(row.cost_amount || 0),
  priceAmount: Number(row.price_amount || 0),
  active: Boolean(row.active),
- locationType: String(row.location_type || (row.is_store_inventory ? "INVENTARIO" : "ESTOQUE"))
+ locationType: String(row.location_type || (row.is_store_inventory ? "INVENTARIO" : "ESTOQUE")),
+ photoUpload: null,
+ photoPreview: row.photo_url || ""
  });
  showForm.value = true;
 }
@@ -1455,7 +1501,9 @@ async function saveItem() {
  ...form,
  isStoreInventory: form.locationType === "INVENTARIO",
  generateFinanceEntry: form.generateFinanceEntry,
- cashAccountId: form.cashAccountId
+ cashAccountId: form.cashAccountId,
+ photoUpload: form.photoUpload,
+ photoPreview: form.photoPreview
  });
  showForm.value = false;
  await loadItems();

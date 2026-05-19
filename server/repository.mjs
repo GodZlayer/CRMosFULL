@@ -199,6 +199,7 @@ export function createRepository(options = {}) {
       sku: row.sku || "",
       brand: row.brand || "",
       description: row.description || "",
+      photo_url: row.photo_path ? `/uploads/${row.photo_path}` : "",
       location_type: row.location_type || (Number(row.is_store_inventory || 0) === 1 ? "INVENTARIO" : "ESTOQUE"),
       is_store_inventory: Number(row.is_store_inventory || 0)
     };
@@ -297,6 +298,7 @@ export function createRepository(options = {}) {
           subcategory TEXT DEFAULT '',
           compatibility TEXT DEFAULT '',
           description TEXT DEFAULT '',
+          photo_path TEXT DEFAULT '',
           item_condition TEXT NOT NULL,
         stock_quantity INTEGER NOT NULL DEFAULT 0,
         min_stock INTEGER NOT NULL DEFAULT 0,
@@ -486,6 +488,7 @@ export function createRepository(options = {}) {
     `);
     addColumnIfMissing('clients', 'photo_path', "TEXT DEFAULT ''");
     addColumnIfMissing('catalog_items', 'description', "TEXT DEFAULT ''");
+    addColumnIfMissing('catalog_items', 'photo_path', "TEXT DEFAULT ''");
     addColumnIfMissing('catalog_items', 'brand', "TEXT DEFAULT ''");
       addColumnIfMissing('catalog_items', 'is_store_inventory', 'INTEGER NOT NULL DEFAULT 0');
       addColumnIfMissing('catalog_items', 'location_type', "TEXT NOT NULL DEFAULT 'ESTOQUE'");
@@ -522,6 +525,7 @@ export function createRepository(options = {}) {
     addColumnIfMissing('order_attachments', 'mime_type', "TEXT DEFAULT ''");
     syncLegacyOrderAttachments();
     migrateCatalogItemsSchema();
+    addColumnIfMissing('catalog_items', 'photo_path', "TEXT DEFAULT ''");
     run("UPDATE catalog_items SET location_type = CASE WHEN COALESCE(is_store_inventory, 0) = 1 THEN 'INVENTARIO' ELSE 'ESTOQUE' END WHERE location_type IS NULL OR location_type = ''");
     seedFinanceCategories();
     run("UPDATE orders SET approval_status = 'AGUARDANDO_APROVACAO' WHERE approval_status IS NULL OR approval_status = '' OR approval_status = 'SEM_ORCAMENTO'");
@@ -1709,7 +1713,15 @@ export function createRepository(options = {}) {
           ), 0)
           ELSE ci.stock_quantity * ci.cost_amount
         END AS stock_cost_value,
-        ROUND(ci.stock_quantity * ci.price_amount, 2) AS stock_value,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM catalog_stock_batches csb WHERE csb.catalog_item_id = ci.id)
+          THEN COALESCE((
+            SELECT ROUND(SUM(csb.quantity_remaining * csb.unit_price), 2)
+            FROM catalog_stock_batches csb
+            WHERE csb.catalog_item_id = ci.id
+          ), 0)
+          ELSE ROUND(ci.stock_quantity * ci.price_amount, 2)
+        END AS stock_value,
         CASE
           WHEN ci.price_amount > 0 THEN ROUND(((ci.price_amount - ci.cost_amount) / ci.price_amount) * 100, 2)
           ELSE 0
@@ -1871,7 +1883,15 @@ export function createRepository(options = {}) {
             ), 0)
             ELSE ci.stock_quantity * ci.cost_amount
           END AS stock_cost_value,
-          ROUND(ci.stock_quantity * ci.price_amount, 2) AS stock_value,
+          CASE
+            WHEN EXISTS (SELECT 1 FROM catalog_stock_batches csb WHERE csb.catalog_item_id = ci.id)
+            THEN COALESCE((
+              SELECT ROUND(SUM(csb.quantity_remaining * csb.unit_price), 2)
+              FROM catalog_stock_batches csb
+              WHERE csb.catalog_item_id = ci.id
+            ), 0)
+            ELSE ROUND(ci.stock_quantity * ci.price_amount, 2)
+          END AS stock_value,
           CASE
             WHEN ci.price_amount > 0 THEN ROUND(((ci.price_amount - ci.cost_amount) / ci.price_amount) * 100, 2)
             ELSE 0
@@ -2049,17 +2069,27 @@ export function createRepository(options = {}) {
     }
 
     if (normalized.id) {
+      let photoPath = current?.photo_path || "";
+      const shouldRemovePhoto = payload.photoPreview === "" && !payload.photoUpload?.base64;
+      if ((payload.photoUpload?.base64 || shouldRemovePhoto) && photoPath) {
+        removeUploadDirectoryByRelativePath(photoPath);
+        photoPath = "";
+      }
+      if (payload.photoUpload?.base64) {
+        photoPath = saveCatalogItemPhoto(normalized.id, payload.photoUpload.base64, payload.photoUpload.name);
+      }
       run(
         `
           UPDATE catalog_items
           SET sku = :sku, name = :name, brand = :brand, category = :category, subcategory = :subcategory,
-                compatibility = :compatibility, description = :description, item_condition = :itemCondition,
+                compatibility = :compatibility, description = :description, photo_path = :photoPath, item_condition = :itemCondition,
               min_stock = :minStock, cost_amount = :costAmount, price_amount = :priceAmount, is_complete = :isComplete, active = :active,
               is_store_inventory = :isStoreInventory, location_type = :locationType, updated_at = :updatedAt
           WHERE id = :id
         `,
         {
           ...normalized,
+          photoPath,
           updatedAt: timestamp
         }
       );
@@ -2115,6 +2145,22 @@ export function createRepository(options = {}) {
       }
     );
     const createdId = Number(result.lastInsertRowid);
+    if (payload.photoUpload?.base64) {
+      const photoPath = saveCatalogItemPhoto(createdId, payload.photoUpload.base64, payload.photoUpload.name);
+      run(
+        `
+          UPDATE catalog_items
+          SET photo_path = :photoPath,
+              updated_at = :updatedAt
+          WHERE id = :id
+        `,
+        {
+          id: createdId,
+          photoPath,
+          updatedAt: timestamp
+        }
+      );
+    }
     const initialReplenishmentId = createStockReplenishmentRecord({
       catalogItemId: createdId,
       quantity: normalized.stockQuantity,
@@ -3187,6 +3233,20 @@ export function createRepository(options = {}) {
     writeFileSync(targetFile, Buffer.from(base64Content, "base64"));
 
     return join(relativeDir, `perfil${extension}`).replaceAll("\\", "/");
+  }
+
+  function saveCatalogItemPhoto(itemId, base64, fileName = "item.jpg") {
+    const safeName = normalizeText(fileName, "item.jpg").replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const extension = extname(safeName) || ".jpg";
+    const relativeDir = join("catalog", String(itemId));
+    const absoluteDir = join(uploadsRoot, relativeDir);
+    mkdirSync(absoluteDir, { recursive: true });
+
+    const base64Content = String(base64).includes(",") ? String(base64).split(",").pop() : String(base64);
+    const targetFile = join(absoluteDir, `imagem${extension}`);
+    writeFileSync(targetFile, Buffer.from(base64Content, "base64"));
+
+    return join(relativeDir, `imagem${extension}`).replaceAll("\\", "/");
   }
 
   function saveOrderPhoto(orderCode, orderDate, base64, fileName = "foto.jpg") {

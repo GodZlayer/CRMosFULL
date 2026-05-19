@@ -331,6 +331,42 @@
                 class="form-control rounded-4"
                 placeholder="Use aqui para resumir atualizações antigas, detalhes ou contexto."></textarea>
             </div>
+
+            <div v-if="taskForm.id" class="col-12">
+              <div class="panel-card task-purchase-panel">
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+                  <div>
+                    <div class="small fw-semibold">OS e compra</div>
+                    <div class="fw-bold">{{ taskForm.order_id ? "OS vinculada" : "Criar OS pela tarefa" }}</div>
+                    <div class="small">Use a tarefa para abrir uma OS e registrar itens que precisam ser comprados.</div>
+                  </div>
+                  <button type="button" class="btn btn-outline-primary rounded-pill" @click="createOrderForTask">
+                    <i class="fa-solid fa-file-circle-plus me-2"></i>
+                    {{ taskForm.order_id ? "Abrir OS vinculada" : "Criar OS" }}
+                  </button>
+                </div>
+                <div class="row g-3">
+                  <div class="col-md-6">
+                    <label class="form-label fw-semibold">Item para comprar</label>
+                    <input v-model="purchaseForm.productName" class="form-control rounded-4" placeholder="Ex.: Tela 15.6 30 pinos" />
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label fw-semibold">Quantidade</label>
+                    <input v-model.number="purchaseForm.quantity" type="number" min="1" class="form-control rounded-4" />
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label fw-semibold">Venda unidade</label>
+                    <input v-model.number="purchaseForm.salePrice" type="number" min="0" step="0.01" class="form-control rounded-4" />
+                  </div>
+                  <div class="col-12 d-flex justify-content-end">
+                    <button type="button" class="btn btn-primary rounded-pill" :disabled="!purchaseForm.productName.trim()" @click="addPurchaseItemFromTask">
+                      <i class="fa-solid fa-cart-plus me-2"></i>
+                      Adicionar para compra
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -390,6 +426,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import AppShell from "../components/AppShell.vue";
 import MetricCard from "../components/MetricCard.vue";
 import ModalDialog from "../components/ModalDialog.vue";
@@ -493,8 +530,14 @@ const dragTaskId = ref<number | null>(null);
 const expandedLaneKeys = ref<string[]>([]);
 const expandedTaskIds = ref<number[]>([]);
 const activeModalTaskId = ref<number | null>(null);
+const router = useRouter();
 
 const taskForm = reactive(createEmptyTaskForm());
+const purchaseForm = reactive({
+  productName: "",
+  quantity: 1,
+  salePrice: 0
+});
 
 const editableLaneDefinitions = computed(() => LANE_DEFINITIONS.filter((lane) => lane.input));
 const laneColumns = computed(() =>
@@ -674,9 +717,18 @@ async function loadOrders() {
 
 function openCreateModal() {
   Object.assign(taskForm, createEmptyTaskForm());
+  resetPurchaseForm();
   taskUpdates.value = [];
   newUpdateMessage.value = "";
   showModal.value = true;
+}
+
+function resetPurchaseForm() {
+  Object.assign(purchaseForm, {
+    productName: "",
+    quantity: 1,
+    salePrice: 0
+  });
 }
 
 async function openTask(taskId: number) {
@@ -697,10 +749,46 @@ async function openTask(taskId: number) {
       legacy_queue_code: response.data.legacy_queue_code || ""
     });
     taskUpdates.value = response.data.updates || [];
+    resetPurchaseForm();
     newUpdateMessage.value = "";
     showModal.value = true;
   } catch (error) {
     activeModalTaskId.value = null;
+    await notifyError(error);
+  }
+}
+
+async function createOrderForTask() {
+  if (!taskForm.id) {
+    await notifyError(new Error("Salve a tarefa antes de criar a OS."));
+    return;
+  }
+  if (taskForm.order_id) {
+    showModal.value = false;
+    await router.push({ name: "os-detalhe", params: { id: String(taskForm.order_id) } });
+    return;
+  }
+  showModal.value = false;
+  await router.push({ name: "os", query: { createOrder: "1", sourceTaskId: String(taskForm.id) } });
+}
+
+async function addPurchaseItemFromTask() {
+  if (!taskForm.id) {
+    await notifyError(new Error("Salve a tarefa antes de adicionar item para compra."));
+    return;
+  }
+  try {
+    const response = await api.addTaskPurchaseItem(Number(taskForm.id), {
+      productName: purchaseForm.productName,
+      quantity: purchaseForm.quantity,
+      salePrice: purchaseForm.salePrice
+    });
+    taskForm.order_id = Number(response.data.task.order_id || response.data.order.id || 0);
+    taskUpdates.value = response.data.task.updates || taskUpdates.value;
+    resetPurchaseForm();
+    await Promise.all([loadTasks(), loadOrders()]);
+    await notifySuccess("Item adicionado para compra.");
+  } catch (error) {
     await notifyError(error);
   }
 }

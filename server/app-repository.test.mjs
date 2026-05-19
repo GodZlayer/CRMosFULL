@@ -154,6 +154,86 @@ test("app repository cria tarefa automatica ao abrir OS sem duplicar em edicoes"
   repository.close();
 });
 
+test("app repository cria OS pela tarefa sem criar tarefa duplicada", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const store = repository.getCurrentStore();
+
+  const task = repository.saveTask({
+    storeId: store.id,
+    title: "Comprar fonte",
+    clientName: "Cliente da tarefa",
+    phone: "11999999999",
+    device: "Notebook",
+    description: "Criar OS a partir desta tarefa",
+    taskDate: "2026-03-12",
+    status: "PENDENTE",
+    priority: "MEDIA",
+    _actor: actor
+  });
+
+  const result = repository.createOrderFromTask(task.id, {
+    storeId: store.id,
+    _actor: actor
+  });
+
+  const linkedTasks = repository
+    .listTasks({ storeId: store.id })
+    .filter((item) => Number(item.order_id) === Number(result.order.id));
+
+  assert.equal(result.created, true);
+  assert.equal(Number(result.task.id), Number(task.id));
+  assert.equal(linkedTasks.length, 1);
+  assert.equal(Number(linkedTasks[0].id), Number(task.id));
+  repository.close();
+});
+
+test("app repository vincula OS salva pelo formulario a tarefa original", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const store = repository.getCurrentStore();
+  const client = repository.listClients({})[0];
+
+  const task = repository.saveTask({
+    storeId: store.id,
+    title: "Tarefa para abrir OS manual",
+    clientName: client.name,
+    phone: client.phone,
+    device: "Notebook",
+    description: "Defeito informado na tarefa",
+    taskDate: "2026-03-12",
+    status: "PENDENTE",
+    priority: "MEDIA",
+    _actor: actor
+  });
+
+  const order = repository.saveOrder({
+    clientId: client.id,
+    phoneSnapshot: client.phone,
+    equipment: "Notebook",
+    defect: "Defeito confirmado no modal",
+    technicianName: "Tecnico Agenda",
+    dueDate: "2026-03-12",
+    orderStatus: "ABERTA",
+    approvalStatus: "AGUARDANDO_APROVACAO",
+    quoteAmount: 0,
+    actualAmount: 0,
+    serviceAmount: 0,
+    paymentMethod: "PIX",
+    items: [],
+    sourceTaskId: task.id,
+    _actor: actor
+  });
+
+  const linkedTasks = repository
+    .listTasks({ storeId: store.id })
+    .filter((item) => Number(item.order_id) === Number(order.id));
+
+  assert.equal(linkedTasks.length, 1);
+  assert.equal(Number(linkedTasks[0].id), Number(task.id));
+  repository.close();
+});
+
 test("app repository records audit logs and timeline events for service orders", () => {
   const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
   const actor = getActor(repository);
@@ -1150,9 +1230,34 @@ test("valor de estoque soma quantidade restante por lote sem usar media", () => 
   assert.equal(Number(refreshed.stock_quantity || 0), 3);
   assert.equal(Number(refreshed.cost_amount || 0), 10.01);
   assert.equal(Number(refreshed.stock_cost_value || 0), 30.01);
-  assert.equal(Number(refreshed.stock_value || 0), 120);
+  assert.equal(Number(refreshed.stock_value || 0), 100);
   assert.equal(Number(listed.stock_cost_value || 0), 30.01);
-  assert.equal(Number(listed.stock_value || 0), 120);
+  assert.equal(Number(listed.stock_value || 0), 100);
+  repository.close();
+});
+
+test("item sem quantidade atual nao compoe valor de custo nem de venda", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const created = repository.saveCatalogItem({
+    name: "Item estoque zerado",
+    category: "Acessórios",
+    itemCondition: "NOVA",
+    stockQuantity: 0,
+    minStock: 0,
+    costAmount: 99,
+    priceAmount: 199,
+    _actor: actor
+  });
+
+  const refreshed = repository.getCatalogItem(created.id);
+  const listed = repository.listCatalogItems({}).find((item) => Number(item.id) === Number(created.id));
+
+  assert.equal(Number(refreshed.stock_quantity || 0), 0);
+  assert.equal(Number(refreshed.stock_cost_value || 0), 0);
+  assert.equal(Number(refreshed.stock_value || 0), 0);
+  assert.equal(Number(listed.stock_cost_value || 0), 0);
+  assert.equal(Number(listed.stock_value || 0), 0);
   repository.close();
 });
 
@@ -1191,7 +1296,7 @@ test("edicao de lote altera apenas a reposicao selecionada", () => {
 
   assert.deepEqual(lots.map((lot) => `${lot.quantity_remaining}x${lot.unit_cost}/${lot.unit_price}`), ["1x30/50", "3x12/55"]);
   assert.equal(Number(updated.stock_cost_value || 0), 66);
-  assert.equal(Number(updated.stock_value || 0), 220);
+  assert.equal(Number(updated.stock_value || 0), 215);
   repository.close();
 });
 

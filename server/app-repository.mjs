@@ -25,6 +25,7 @@ import {
   exportSqliteBackupOds,
   importMysqlToSqlite,
   importSqliteBackupOds,
+  listPortableSqliteTables,
 } from "./system-transfer.mjs";
 import { createOdsWorkbook } from "./ods-export.mjs";
 import {
@@ -173,6 +174,8 @@ export function createAppRepository(options = {}) {
     getTaskBoard,
     getTask,
     saveTask,
+    createOrderFromTask,
+    addTaskPurchaseItem,
     deleteTask,
     saveTaskUpdate,
     getDashboardSummary,
@@ -2740,7 +2743,7 @@ export function createAppRepository(options = {}) {
         category: "Reposição de estoque",
         description: buildReplenishmentReportDescription(row),
         amount: roundCurrency(Number(row.quantity || 0) * Number(row.new_cost_amount || 0)),
-        entry_date: String(row.created_at || "").slice(0, 10),
+        entry_date: String(row.created_at || ""),
         payment_method: "NAO_DEFINIDO",
         order_id: null,
         order_code: "",
@@ -2749,6 +2752,11 @@ export function createAppRepository(options = {}) {
         cash_account_name: "",
         cash_account_code: "",
         replenishment_id: Number(row.id || 0) || null,
+        catalog_item_id: Number(row.catalog_item_id || 0) || null,
+        catalog_item_name: normalizeText(row.catalog_item_name),
+        quantity: Number(row.quantity || 0),
+        new_cost_amount: Number(row.new_cost_amount || 0),
+        new_price_amount: Number(row.new_price_amount || 0),
         finance_entry_id: null,
         source_workbook: normalizeText(row.source_workbook),
         source_sheet: normalizeText(row.source_sheet),
@@ -3975,11 +3983,36 @@ export function createAppRepository(options = {}) {
     const actor = payload._actor;
     const store = requireStoreContext(payload);
     const beforeState = payload.id ? repo.getOrder(Number(payload.id)) : null;
+    const sourceTaskId = !beforeState && payload.sourceTaskId ? Number(payload.sourceTaskId) : 0;
     if (beforeState) {
       ensureOrderIsEditable(beforeState, "alterada");
     }
     const order = baseSaveOrder(payload);
-    if (!beforeState) {
+    if (sourceTaskId) {
+      const sourceTask = getTask(sourceTaskId);
+      if (sourceTask) {
+        saveTask({
+          id: sourceTaskId,
+          orderId: Number(order.id),
+          title: sourceTask.title,
+          clientName: sourceTask.client_name,
+          phone: sourceTask.phone,
+          valueLabel: sourceTask.value_label || sourceTask.value_amount,
+          device: sourceTask.device,
+          description: sourceTask.description,
+          responsibleName: sourceTask.responsible_name,
+          notes: sourceTask.notes,
+          legacyQueueCode: sourceTask.legacy_queue_code,
+          storeId: store.id,
+          _store: store,
+          _actor: actor
+        });
+        saveTaskUpdate(sourceTaskId, {
+          message: `OS ${order.code} criada a partir desta tarefa.`,
+          _actor: actor
+        });
+      }
+    } else if (!beforeState && payload.skipTaskAutomation !== true) {
       ensureOrderTask(order, store.id, actor);
     }
     syncOrderRevenueEntry(order, store.id, actor);
@@ -4673,6 +4706,114 @@ export function createAppRepository(options = {}) {
     const task = getTask(persistedTaskId);
     writeAuditLog(actor, "DAILY_TASK", task?.id || null, existing ? "UPDATE" : "CREATE", existing, task, { storeId: store.id });
     return task;
+  }
+
+  function findOrCreateClientForTask(task, actor) {
+    const clientName = normalizeText(task.client_name || task.title, "Cliente da tarefa") || "Cliente da tarefa";
+    const phone = normalizeText(task.phone, "Sem telefone") || "Sem telefone";
+    const existing = repo.listClients({ search: phone }).find((client) =>
+      normalizeText(client.phone).toLowerCase() === phone.toLowerCase()
+      || normalizeText(client.name).toLowerCase() === clientName.toLowerCase()
+    );
+    if (existing?.id) {
+      return existing;
+    }
+    return repo.saveClient({
+      name: clientName,
+      phone,
+      notes: `Criado automaticamente a partir da tarefa #${task.id}.`,
+      _actor: actor
+    });
+  }
+
+  function createOrderFromTask(taskId, payload = {}) {
+    const actor = payload._actor || payload.actor;
+    const store = requireStoreContext(payload);
+    const task = getTask(Number(taskId));
+    if (!task) {
+      throw new Error("Tarefa nao encontrada.");
+    }
+    if (task.order_id) {
+      return { task, order: repo.getOrder(Number(task.order_id)), created: false };
+    }
+
+    const client = findOrCreateClientForTask(task, actor);
+    const order = saveOrder({
+      clientId: Number(client.id),
+      phoneSnapshot: normalizeText(task.phone || client.phone),
+      equipment: normalizeText(payload.equipment || task.device, "Item informado na tarefa") || "Item informado na tarefa",
+      defect: normalizeText(payload.defect || task.description || task.title, "Criado a partir de tarefa") || "Criado a partir de tarefa",
+      extras: normalizeText(payload.extras || task.notes, `Tarefa #${task.id}`) || `Tarefa #${task.id}`,
+      technicianName: normalizeText(payload.technicianName || task.responsible_name, actor?.name || "Equipe") || "Equipe",
+      dueDate: normalizeText(payload.dueDate || task.legacy_target_date || task.task_date, getLocalDateString()) || getLocalDateString(),
+      orderStatus: "ABERTA",
+      approvalStatus: "AGUARDANDO_APROVACAO",
+      quoteAmount: toNumber(task.value_amount) ?? coerceLegacyNumber(task.value_label) ?? 0,
+      actualAmount: toNumber(task.value_amount) ?? coerceLegacyNumber(task.value_label) ?? 0,
+      serviceAmount: 0,
+      discountAmount: 0,
+      paymentMethod: "NAO_DEFINIDO",
+      notes: `OS criada pela tarefa #${task.id}. ${normalizeText(task.notes)}`.trim(),
+      items: [],
+      requestedProducts: [],
+      storeId: store.id,
+      skipTaskAutomation: true,
+      _store: store,
+      _actor: actor
+    });
+
+    const updatedTask = saveTask({
+      id: Number(task.id),
+      orderId: Number(order.id),
+      title: task.title,
+      clientName: task.client_name,
+      phone: task.phone,
+      valueLabel: task.value_label || task.value_amount,
+      device: task.device,
+      description: task.description,
+      responsibleName: task.responsible_name,
+      notes: task.notes,
+      legacyQueueCode: task.legacy_queue_code,
+      storeId: store.id,
+      _store: store,
+      _actor: actor
+    });
+
+    saveTaskUpdate(Number(task.id), {
+      message: `OS ${order.code} criada a partir desta tarefa.`,
+      _actor: actor
+    });
+
+    return { task: updatedTask, order, created: true };
+  }
+
+  function addTaskPurchaseItem(taskId, payload = {}) {
+    const actor = payload._actor || payload.actor;
+    const store = requireStoreContext(payload);
+    let task = getTask(Number(taskId));
+    if (!task) {
+      throw new Error("Tarefa nao encontrada.");
+    }
+    if (!task.order_id) {
+      task = createOrderFromTask(taskId, { ...payload, storeId: store.id, _store: store, _actor: actor }).task;
+    }
+    const productName = normalizeText(payload.productName || payload.name || payload.description);
+    if (!productName) {
+      throw new Error("Informe o item para compra.");
+    }
+    const order = addOrderRequestedProduct(Number(task.order_id), {
+      name: productName,
+      quantity: payload.quantity || 1,
+      salePrice: payload.salePrice || payload.sale_price || 0,
+      storeId: store.id,
+      _store: store,
+      _actor: actor
+    });
+    saveTaskUpdate(Number(task.id), {
+      message: `Item para compra adicionado na OS ${order.code}: ${productName}.`,
+      _actor: actor
+    });
+    return { task: getTask(Number(task.id)), order };
   }
 
   function saveTaskUpdate(taskId, payload = {}) {
@@ -5946,6 +6087,23 @@ export function createAppRepository(options = {}) {
     return parseLegacyDateValue(normalized, fallback);
   }
 
+  function parseWorkbookTimestamp(value, fallback = nowIso()) {
+    const normalized = normalizeText(value);
+    if (!normalized) {
+      return fallback;
+    }
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(normalized)) {
+      return normalized;
+    }
+    if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(normalized)) {
+      return normalized.replace(" ", "T");
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+      return `${normalized}T00:00:00.000Z`;
+    }
+    return `${parseLegacyDateValue(normalized, fallback.slice(0, 10))}T00:00:00.000Z`;
+  }
+
   function normalizeWorkbookFileName(value = "", fallback = "loja") {
     const slug = legacySlug(value || fallback).replace(/\s+/g, "-");
     return slug || "loja";
@@ -6106,7 +6264,7 @@ export function createAppRepository(options = {}) {
       {
         name: "Estoque",
         rows: [
-          ["id", "sku", "nome", "marca", "categoria", "subcategoria", "condicao", "estoque", "estoque_minimo", "custo", "preco", "valor_custo_estoque", "valor_venda_estoque", "situacao_estoque", "ativo", "uso_em_os"],
+          ["id", "sku", "nome", "marca", "categoria", "subcategoria", "condicao", "estoque", "estoque_minimo", "custo", "preco", "valor_custo_estoque", "valor_venda_estoque", "situacao_estoque", "ativo", "uso_em_os", "adicionado_em", "atualizado_em", "reposto_em"],
           ...catalogItems.map((item) => {
             const stockQuantity = Number(item.stock_quantity || 0);
             const minStock = Number(item.min_stock || 0);
@@ -6129,7 +6287,10 @@ export function createAppRepository(options = {}) {
               roundCurrency(stockQuantity * priceAmount),
               status,
               Number(item.active || 0),
-              stockUsageCounts.get(Number(item.id)) || 0
+              stockUsageCounts.get(Number(item.id)) || 0,
+              item.created_at || "",
+              item.updated_at || "",
+              item.last_replenishment_at || ""
             ];
           })
         ]
@@ -6137,11 +6298,16 @@ export function createAppRepository(options = {}) {
       {
         name: "Reposicoes",
         rows: [
-          ["id", "data", "descricao", "valor", "workbook_origem", "aba_origem", "linha_origem"],
+          ["id", "catalogo_id", "item", "data", "descricao", "quantidade", "custo_unitario", "venda_unitaria", "valor", "workbook_origem", "aba_origem", "linha_origem"],
           ...replenishments.map((entry) => [
             entry.replenishment_id || entry.id || "",
-            String(entry.entry_date || "").slice(0, 10),
+            entry.catalog_item_id || "",
+            entry.catalog_item_name || "",
+            entry.entry_date || "",
             entry.description || "",
+            Number(entry.quantity || 0),
+            Number(entry.new_cost_amount || 0),
+            Number(entry.new_price_amount || 0),
             Number(entry.amount || 0),
             entry.source_workbook || "",
             entry.source_sheet || "",
@@ -6319,6 +6485,96 @@ export function createAppRepository(options = {}) {
     }
   }
 
+  function reconcileStockDatesFromFinance() {
+    const normalizeStockName = (value = "") => legacySlug(String(value || "").replace(/&quot;/g, '"'));
+    const normalizeFinanceStockName = (value = "") => normalizeStockName(String(value || "")
+      .replace(/^Estoque inicial:\s*/i, "")
+      .replace(/^Reposi[cç][aã]o de estoque:\s*/i, "")
+      .replace(/\s*\(Qtd:\s*\d+\s*\)\s*$/i, ""));
+    const timestampFromFinanceEntry = (entry = {}, fallbackIndex = 0) => {
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(String(entry.entry_date || ""))
+        ? String(entry.entry_date)
+        : String(entry.created_at || getLocalDateString()).slice(0, 10);
+      const minutes = Math.max(0, Number(entry.source_row || fallbackIndex || 0));
+      const hour = String(Math.floor(minutes / 60)).padStart(2, "0");
+      const minute = String(minutes % 60).padStart(2, "0");
+      return `${date}T${hour}:${minute}:00.000-03:00`;
+    };
+    const financeRows = all(`
+      SELECT id, description, amount, entry_date, created_at, source_row
+      FROM finance_entries
+      WHERE entry_type = 'DESPESA'
+        AND (
+          lower(description) LIKE lower('%Estoque inicial:%')
+          OR lower(description) LIKE lower('%Reposição de estoque:%')
+        )
+      ORDER BY id ASC
+    `).map((entry, index) => ({
+      ...entry,
+      matchName: normalizeFinanceStockName(entry.description),
+      matchAmount: Math.round(Number(entry.amount || 0) * 100),
+      matchedAt: timestampFromFinanceEntry(entry, index)
+    }));
+    const replenishmentRows = all(`
+      SELECT
+        sr.id,
+        sr.catalog_item_id,
+        ci.name,
+        ROUND(sr.quantity * sr.new_cost_amount, 2) AS amount
+      FROM stock_replenishments sr
+      JOIN catalog_items ci ON ci.id = sr.catalog_item_id
+      ORDER BY sr.id ASC
+    `).map((entry) => ({
+      ...entry,
+      matchName: normalizeStockName(entry.name),
+      matchAmount: Math.round(Number(entry.amount || 0) * 100)
+    }));
+
+    let updated = 0;
+    let ambiguous = 0;
+    let unmatched = 0;
+    for (const replenishment of replenishmentRows) {
+      const matches = financeRows.filter((entry) => entry.matchName === replenishment.matchName && entry.matchAmount === replenishment.matchAmount);
+      if (matches.length !== 1) {
+        if (matches.length > 1) {
+          ambiguous += 1;
+        } else {
+          unmatched += 1;
+        }
+        continue;
+      }
+      const match = matches[0];
+      run(
+        `
+          UPDATE stock_replenishments
+          SET created_at = :createdAt,
+              finance_entry_id = COALESCE(finance_entry_id, :financeEntryId)
+          WHERE id = :id
+        `,
+        { id: Number(replenishment.id), createdAt: match.matchedAt, financeEntryId: Number(match.id) }
+      );
+      run(
+        `
+          UPDATE catalog_stock_batches
+          SET created_at = :createdAt,
+              updated_at = CASE WHEN updated_at < :createdAt THEN :createdAt ELSE updated_at END
+          WHERE source_type = 'REPLENISHMENT' AND source_id = :id
+        `,
+        { id: Number(replenishment.id), createdAt: match.matchedAt }
+      );
+      run(
+        `
+          UPDATE catalog_items
+          SET created_at = :createdAt
+          WHERE id = :id AND created_at > :createdAt
+        `,
+        { id: Number(replenishment.catalog_item_id), createdAt: match.matchedAt }
+      );
+      updated += 1;
+    }
+    return { updated, ambiguous, unmatched };
+  }
+
   function importOperationalOds(payload = {}) {
     const actor = payload._actor || payload.actor;
     const store = requireStoreContext(payload);
@@ -6333,6 +6589,22 @@ export function createAppRepository(options = {}) {
     const requiredSheets = Object.values(getOperationalWorkbookSheetMap());
     const missingSheets = requiredSheets.filter((sheetName) => !sheetMap.has(normalizeText(sheetName)));
     if (missingSheets.length) {
+      const portableTables = listPortableSqliteTables(db);
+      const hasFullBackupSheets = portableTables.length > 0 && portableTables.every((tableName) => sheetMap.has(normalizeText(tableName)));
+      if (hasFullBackupSheets) {
+        const summary = importSqliteBackupOds(db, Buffer.from(contentBase64, "base64"), {
+          fileName,
+          clearExisting: payload.clearExisting !== false
+        });
+        syncStores();
+        syncCompanyProfiles();
+        syncLowStockNotifications();
+        writeAuditLog(actor, "SYSTEM_TRANSFER", null, "ODS_BACKUP_IMPORT", null, summary, {
+          fileName: summary.fileName,
+          totalRows: summary.totalRows
+        });
+        return summary;
+      }
       throw new Error(`Arquivo ODS incompleto ou legado. Faltam abas: ${missingSheets.join(", ")}`);
     }
 
@@ -6484,6 +6756,14 @@ export function createAppRepository(options = {}) {
         if (!name) {
           continue;
         }
+        const stockCreatedAt = parseWorkbookTimestamp(
+          getWorkbookRowValue(row, stockHeaderMap, ["adicionado_em", "created_at", "criado_em"]),
+          timestamp
+        );
+        const stockUpdatedAt = parseWorkbookTimestamp(
+          getWorkbookRowValue(row, stockHeaderMap, ["atualizado_em", "updated_at"]),
+          stockCreatedAt
+        );
         run(
           `
             INSERT INTO catalog_items (
@@ -6510,8 +6790,8 @@ export function createAppRepository(options = {}) {
             costAmount: toWorkbookNumber(getWorkbookRowValue(row, stockHeaderMap, ["custo"])),
             priceAmount: toWorkbookNumber(getWorkbookRowValue(row, stockHeaderMap, ["preco"])),
             active: Number(getWorkbookRowValue(row, stockHeaderMap, ["ativo"]) || 1) ? 1 : 0,
-            createdAt: timestamp,
-            updatedAt: timestamp,
+            createdAt: stockCreatedAt,
+            updatedAt: stockUpdatedAt,
             legacySourceId: sku || String(id || "")
           }
         );
@@ -6533,14 +6813,20 @@ export function createAppRepository(options = {}) {
           continue;
         }
         const id = Number(getWorkbookRowValue(row, replenishmentHeaderMap, ["id"]) || 0);
+        const explicitCatalogItemId = Number(getWorkbookRowValue(row, replenishmentHeaderMap, ["catalogo_id", "catalog_item_id"]) || 0);
         const extractedName = normalizeText(description.replace(/^Estoque inicial:\s*/i, "").replace(/\s*\(Qtd:.*/i, ""));
         const quantityMatch = description.match(/\(Qtd:\s*(\d+)\s*\)/i);
-        const quantity = Math.max(1, Number(quantityMatch?.[1] || 1));
-        const matchedItemId = itemMap.get(legacySlug(extractedName)) || itemMap.get(legacySlug(description)) || null;
+        const quantity = Math.max(1, Number(getWorkbookRowValue(row, replenishmentHeaderMap, ["quantidade"]) || quantityMatch?.[1] || 1));
+        const itemName = getWorkbookRowValue(row, replenishmentHeaderMap, ["item", "nome"]);
+        const matchedItemId = itemMap.get(String(explicitCatalogItemId)) || itemMap.get(legacySlug(itemName)) || itemMap.get(legacySlug(extractedName)) || itemMap.get(legacySlug(description)) || null;
         if (!matchedItemId) {
           continue;
         }
         const amount = toWorkbookNumber(getWorkbookRowValue(row, replenishmentHeaderMap, ["valor"]));
+        const replenishmentCreatedAt = parseWorkbookTimestamp(
+          getWorkbookRowValue(row, replenishmentHeaderMap, ["data", "created_at", "criado_em"]),
+          timestamp
+        );
         run(
           `
             INSERT INTO stock_replenishments (
@@ -6558,12 +6844,12 @@ export function createAppRepository(options = {}) {
             id: id || null,
             catalogItemId: matchedItemId,
             quantity,
-            newCostAmount: matchedItemId ? Number(get("SELECT cost_amount FROM catalog_items WHERE id = :id", { id: matchedItemId })?.cost_amount || 0) : amount,
-            newPriceAmount: matchedItemId ? Number(get("SELECT price_amount FROM catalog_items WHERE id = :id", { id: matchedItemId })?.price_amount || 0) : amount,
+            newCostAmount: toWorkbookNumber(getWorkbookRowValue(row, replenishmentHeaderMap, ["custo_unitario"]), matchedItemId ? Number(get("SELECT cost_amount FROM catalog_items WHERE id = :id", { id: matchedItemId })?.cost_amount || 0) : amount),
+            newPriceAmount: toWorkbookNumber(getWorkbookRowValue(row, replenishmentHeaderMap, ["venda_unitaria"]), matchedItemId ? Number(get("SELECT price_amount FROM catalog_items WHERE id = :id", { id: matchedItemId })?.price_amount || 0) : amount),
             notes: description,
             actorUserId: fallbackUserId,
             actorName: fallbackUserName,
-            createdAt: timestamp,
+            createdAt: replenishmentCreatedAt,
             sourceWorkbook: getWorkbookRowValue(row, replenishmentHeaderMap, ["workbook_origem"]),
             sourceSheet: getWorkbookRowValue(row, replenishmentHeaderMap, ["aba_origem"]) || "Reposicoes",
             sourceRow: Number(getWorkbookRowValue(row, replenishmentHeaderMap, ["linha_origem"]) || rowIndex + 1),
@@ -6930,6 +7216,8 @@ export function createAppRepository(options = {}) {
           }
         );
       }
+
+      summary.stockDatesFromFinance = reconcileStockDatesFromFinance();
 
       for (const sheetName of requiredSheets) {
         if (!summary.sheets[sheetName]) {

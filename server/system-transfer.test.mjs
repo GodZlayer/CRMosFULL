@@ -195,3 +195,67 @@ test("importOperationalOds accepts the legacy workbook and restores operational 
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("operational ODS preserves catalog created and replenishment timestamps", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "crm-ods-dates-"));
+  const source = createAppRepository({
+    dbPath: ":memory:",
+    storageRoot: tempDir,
+    uploadsRoot: tempDir,
+    seedDemo: true
+  });
+  const target = createAppRepository({
+    dbPath: ":memory:",
+    storageRoot: tempDir,
+    uploadsRoot: tempDir,
+    seedDemo: true
+  });
+
+  try {
+    const actor = { id: 1, name: "QA" };
+    const store = source.getCurrentStore();
+    const account = source.listStoreCashAccounts(store.id).find((entry) => Number(entry.active || 0) === 1);
+    const item = source.saveCatalogItem({
+      name: "Item com data preservada",
+      category: "Acessórios",
+      itemCondition: "NOVA",
+      stockQuantity: 0,
+      minStock: 0,
+      costAmount: 12,
+      priceAmount: 30,
+      _actor: actor
+    });
+    const replenished = source.replenishCatalogItem(item.id, {
+      quantity: 2,
+      costAmount: 12,
+      priceAmount: 30,
+      cashAccountId: account.id,
+      _actor: actor
+    });
+    const replenishmentId = replenished.replenishment_history?.[0]?.id;
+    source.db.prepare("UPDATE catalog_items SET created_at = :createdAt, updated_at = :updatedAt WHERE id = :id").run({
+      id: item.id,
+      createdAt: "2026-01-02T03:04:05.000Z",
+      updatedAt: "2026-01-03T04:05:06.000Z"
+    });
+    source.db.prepare("UPDATE stock_replenishments SET created_at = :createdAt WHERE id = :id").run({
+      id: replenishmentId,
+      createdAt: "2026-01-04T05:06:07.000Z"
+    });
+
+    const exported = source.exportOperationalOds({ _actor: actor });
+    target.importOperationalOds({
+      fileName: exported.fileName,
+      contentBase64: exported.buffer.toString("base64"),
+      _actor: actor
+    });
+
+    const imported = target.listCatalogItems({ search: "Item com data preservada" })[0];
+    assert.equal(imported.created_at, "2026-01-02T03:04:05.000Z");
+    assert.equal(imported.last_replenishment_at, "2026-01-04T05:06:07.000Z");
+  } finally {
+    source.close();
+    target.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

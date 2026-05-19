@@ -396,6 +396,18 @@ export const api = {
       body: JSON.stringify(payload)
     });
   },
+  createOrderFromTask(id: number, payload: Record<string, unknown> = {}) {
+    return request<{ data: { task: DailyTask; order: OrderDetail; created: boolean } }>(`/api/tasks/${id}/create-order`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  },
+  addTaskPurchaseItem(id: number, payload: Record<string, unknown>) {
+    return request<{ data: { task: DailyTask; order: OrderDetail } }>(`/api/tasks/${id}/purchase-items`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  },
   financeCategories(entryType = "") {
     return request<{ data: FinanceCategory[] }>(`/api/finance-categories${entryType ? `?entryType=${encodeURIComponent(entryType)}` : ""}`);
   },
