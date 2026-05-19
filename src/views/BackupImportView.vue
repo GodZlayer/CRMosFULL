@@ -356,7 +356,9 @@
                     <td class="text-end">
                       <div class="d-inline-flex gap-2">
                         <button class="btn btn-sm btn-outline-light rounded-pill" @click="editCashAccount(item)">Editar</button>
-                        <button class="btn btn-sm btn-outline-danger rounded-pill" @click="removeCashAccount(item)">Remover</button>
+                        <button class="btn btn-sm btn-outline-danger rounded-pill" @click="removeCashAccount(item)">
+                          {{ Number(item.movement_count || 0) > 0 ? "Arquivar" : "Remover" }}
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -1147,17 +1149,19 @@ async function submitCashAccountForm() {
 }
 
 async function removeCashAccount(item: StoreCashAccount) {
-  if (!window.confirm(`Remover a conta ${item.name}?`)) {
+  const actionLabel = Number(item.movement_count || 0) > 0 ? "Arquivar" : "Remover";
+  if (!window.confirm(`${actionLabel} a conta ${item.name}?`)) {
     return;
   }
 
   try {
-    await api.deleteStoreCashAccount(item.id);
-    lastAction.value = "Conta de caixa removida";
+    const response = await api.deleteStoreCashAccount(item.id);
+    const archived = Boolean((response as any)?.archived);
+    lastAction.value = archived ? "Conta de caixa arquivada" : "Conta de caixa removida";
     lastResult.value = { id: item.id, code: item.code, success: true };
     await loadAdminData(true);
     await session.refreshMeta();
-    await notifySuccess("Conta removida", item.name);
+    await notifySuccess(archived ? "Conta arquivada" : "Conta removida", item.name);
     if (cashAccountForm.id === item.id) {
       resetCashAccountForm();
     }

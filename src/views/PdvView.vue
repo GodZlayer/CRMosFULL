@@ -398,7 +398,6 @@ const fallbackPaymentMethods = [
   { code: "MAQ_AMARELA_PIX_CEL", label: "Maq Amarela/pix cel" },
   { code: "CAIXINHA_LOJA", label: "Caixinha loja" },
   { code: "R_COM_DENIO", label: "R$ com Denio" },
-  { code: "OUTROS_REGINA", label: "outros Regina" },
   { code: "ARTHUR", label: "Arthur" },
   { code: "BOLETOS", label: "boletos" }
 ];

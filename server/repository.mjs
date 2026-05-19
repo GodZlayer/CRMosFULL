@@ -394,12 +394,14 @@ export function createRepository(options = {}) {
         sale_price REAL NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'PENDENTE',
         purchase_cost REAL DEFAULT NULL,
+        purchase_cash_account_id INTEGER DEFAULT NULL,
         finance_entry_id INTEGER DEFAULT NULL,
         purchased_at TEXT DEFAULT '',
         denied_at TEXT DEFAULT '',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+        FOREIGN KEY (purchase_cash_account_id) REFERENCES store_cash_accounts(id) ON DELETE SET NULL,
         FOREIGN KEY (finance_entry_id) REFERENCES finance_entries(id) ON DELETE SET NULL
       );
 
@@ -512,6 +514,7 @@ export function createRepository(options = {}) {
     addColumnIfMissing('order_requested_products', 'sale_price', 'REAL NOT NULL DEFAULT 0');
     addColumnIfMissing('order_requested_products', 'status', "TEXT NOT NULL DEFAULT 'PENDENTE'");
     addColumnIfMissing('order_requested_products', 'purchase_cost', 'REAL DEFAULT NULL');
+    addColumnIfMissing('order_requested_products', 'purchase_cash_account_id', 'INTEGER DEFAULT NULL');
     addColumnIfMissing('order_requested_products', 'finance_entry_id', 'INTEGER DEFAULT NULL');
     addColumnIfMissing('order_requested_products', 'purchased_at', "TEXT DEFAULT ''");
     addColumnIfMissing('order_requested_products', 'denied_at', "TEXT DEFAULT ''");
@@ -1708,7 +1711,7 @@ export function createRepository(options = {}) {
         END AS stock_cost_value,
         ROUND(ci.stock_quantity * ci.price_amount, 2) AS stock_value,
         CASE
-          WHEN ci.cost_amount > 0 THEN ROUND(((ci.price_amount - ci.cost_amount) / ci.cost_amount) * 100, 2)
+          WHEN ci.price_amount > 0 THEN ROUND(((ci.price_amount - ci.cost_amount) / ci.price_amount) * 100, 2)
           ELSE 0
         END AS profit_percent,
         (
@@ -1827,7 +1830,10 @@ export function createRepository(options = {}) {
         if (filters.itemCondition && row.item_condition !== filters.itemCondition) {
           return false;
         }
-        if (String(filters.lowStockOnly) === "true" && row.stock_quantity > row.min_stock) {
+        if (String(filters.belowMinStockOnly) === "true" && row.stock_quantity >= row.min_stock) {
+          return false;
+        }
+        if (String(filters.lowStockOnly) === "true" && row.stock_quantity !== row.min_stock) {
           return false;
         }
         if (String(filters.activeOnly) === "true" && !row.active) {
@@ -1866,6 +1872,10 @@ export function createRepository(options = {}) {
             ELSE ci.stock_quantity * ci.cost_amount
           END AS stock_cost_value,
           ROUND(ci.stock_quantity * ci.price_amount, 2) AS stock_value,
+          CASE
+            WHEN ci.price_amount > 0 THEN ROUND(((ci.price_amount - ci.cost_amount) / ci.price_amount) * 100, 2)
+            ELSE 0
+          END AS profit_percent,
           CASE
             WHEN ci.stock_quantity <= 0 THEN 'SEM_ESTOQUE'
             WHEN ci.stock_quantity <= ci.min_stock THEN 'BAIXO'
@@ -2772,7 +2782,7 @@ export function createRepository(options = {}) {
 
     const requestedProducts = all(
       `
-        SELECT id, product_name, quantity, sale_price, status, purchase_cost, finance_entry_id, purchased_at, denied_at, created_at, updated_at
+        SELECT id, product_name, quantity, sale_price, status, purchase_cost, purchase_cash_account_id, finance_entry_id, purchased_at, denied_at, created_at, updated_at
         FROM order_requested_products
         WHERE order_id = :orderId
         ORDER BY id ASC
@@ -3018,10 +3028,10 @@ export function createRepository(options = {}) {
         run(
           `
             INSERT INTO order_requested_products (
-              order_id, product_name, quantity, sale_price, status, purchase_cost, created_at, updated_at
+              order_id, product_name, quantity, sale_price, status, purchase_cost, purchase_cash_account_id, created_at, updated_at
             )
             VALUES (
-              :orderId, :productName, :quantity, :salePrice, :status, :purchaseCost, :createdAt, :updatedAt
+              :orderId, :productName, :quantity, :salePrice, :status, :purchaseCost, :purchaseCashAccountId, :createdAt, :updatedAt
             )
           `,
           {
@@ -3031,6 +3041,7 @@ export function createRepository(options = {}) {
             salePrice: Number(requestedProduct.salePrice || 0),
             status: normalizeText(requestedProduct.status, 'PENDENTE') || 'PENDENTE',
             purchaseCost: requestedProduct.purchaseCost ?? null,
+            purchaseCashAccountId: requestedProduct.purchaseCashAccountId ?? null,
             createdAt: timestamp,
             updatedAt: timestamp
           }

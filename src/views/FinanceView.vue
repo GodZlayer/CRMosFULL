@@ -85,7 +85,7 @@
           <div>
             <div class="small fw-semibold">Conferência</div>
             <h3 class="h5 fw-bold mb-1">Saldo por tipo</h3>
-            <p class="mb-0">Conta: máquina amarela + conta vermelha. Dinheiro: caixinha loja + R$ Denio. Outros: outros + boletos.</p>
+            <p class="mb-0">Conta: máquina amarela + conta vermelha. Dinheiro: caixinha loja + R$ Denio. Outros: boletos.</p>
           </div>
         </div>
 
@@ -608,7 +608,7 @@ const groupedRows = computed(() => [
   },
   {
     label: "Outros",
-    value: roundMoney(readAccountBalance("OUTROS_REGINA") + readAccountBalance("BOLETOS"))
+    value: roundMoney(readAccountBalance("BOLETOS"))
   }
 ]);
 const financeCategories = ref<FinanceCategory[]>([]);
@@ -804,7 +804,7 @@ function canEditMovement(entry: StoreCashMovement) {
   if (Number(entry.replenishment_id || 0) > 0) {
     return false;
   }
-  if (source.startsWith("CATALOG_") || source === "ORDER_COMPLETION" || source === "PDV_PAYMENT") {
+  if (source.startsWith("CATALOG_") || source === "ORDER_COMPLETION" || source === "ORDER_COMPLETION_REQUESTED_PRODUCT_COST" || source === "PDV_PAYMENT") {
     return false;
   }
   return Number(entry.finance_entry_id || 0) > 0;

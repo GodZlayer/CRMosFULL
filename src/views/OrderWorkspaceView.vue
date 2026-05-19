@@ -19,11 +19,14 @@
  <h2 class="h1 fw-bold mb-1">{{ orderView.code }}</h2>
  <div class="text-white-50">{{ orderView.client_name }} | {{ orderView.equipment }}</div>
  </div>
- <div class="d-flex flex-wrap gap-2">
- <span class="badge text-bg-light">{{ orderStatusLabel(orderView.order_status) }}</span>
- <span class="badge text-bg-warning-subtle text-warning-emphasis">{{ approvalStatusLabel(orderView.approval_status) }}</span>
- </div>
- </div>
+<div class="d-flex flex-wrap gap-2">
+<span class="badge text-bg-light">{{ orderStatusLabel(orderView.order_status) }}</span>
+<span class="badge text-bg-warning-subtle text-warning-emphasis">{{ approvalStatusLabel(orderView.approval_status) }}</span>
+</div>
+</div>
+</div>
+ <div v-if="isOrderLocked" class="alert alert-warning border-0 rounded-4 shadow-sm mb-0">
+  A OS está concluída. Este painel entra em modo somente leitura para manter o fechamento financeiro consistente.
  </div>
 
  <div class="row g-4">
@@ -59,7 +62,7 @@
  <label class="form-label fw-semibold required-label">Ajustar previsão</label>
  <div class="d-flex flex-wrap gap-2">
  <input v-model="dueDateForm" type="date" class="form-control rounded-4" style="max-width: 220px" required />
- <button class="btn btn-outline-primary rounded-pill" @click="saveDueDate" :disabled="!dueDateForm || loading">
+ <button class="btn btn-outline-primary rounded-pill" @click="saveDueDate" :disabled="isOrderLocked || !dueDateForm || loading">
  <i class="fa-solid fa-calendar-check me-2"></i>
  Salvar previsão
  </button>
@@ -81,7 +84,7 @@
  <label class="form-label fw-semibold required-label">Ajustar orçamento manual</label>
  <div class="d-flex flex-wrap gap-2 align-items-end">
  <input v-model.number="manualQuoteForm" type="number" min="0" step="0.01" class="form-control rounded-4" style="max-width: 220px" required />
- <button class="btn btn-outline-primary rounded-pill" @click="saveManualQuote" :disabled="manualQuoteForm === null || manualQuoteForm === undefined || loading || savingQuote">
+ <button class="btn btn-outline-primary rounded-pill" @click="saveManualQuote" :disabled="isOrderLocked || manualQuoteForm === null || manualQuoteForm === undefined || loading || savingQuote">
  <i class="fa-solid fa-money-bill-wave me-2"></i>
  Salvar orçamento
  </button>
@@ -136,7 +139,7 @@
   </div>
  </div>
  <div class="d-flex justify-content-end">
-  <button type="button" class="btn btn-outline-primary rounded-pill" :disabled="!attachmentUploads.length || savingAttachments" @click="saveAttachmentUploads">
+ <button type="button" class="btn btn-outline-primary rounded-pill" :disabled="isOrderLocked || !attachmentUploads.length || savingAttachments" @click="saveAttachmentUploads">
    <i class="fa-solid fa-paperclip me-2"></i>
    Salvar anexos
   </button>
@@ -170,8 +173,8 @@
  <input v-model="eventForm.eventDate" type="date" class="form-control rounded-4" />
  </div>
  <div class="d-flex justify-content-end gap-2">
- <button type="button" class="btn btn-light rounded-pill" @click="resetEventForm">Limpar</button>
- <button class="btn btn-primary rounded-pill">
+ <button type="button" class="btn btn-light rounded-pill" :disabled="isOrderLocked" @click="resetEventForm">Limpar</button>
+ <button class="btn btn-primary rounded-pill" :disabled="isOrderLocked">
  <i class="fa-solid fa-floppy-disk me-2"></i>
  Registrar evento
  </button>
@@ -218,7 +221,7 @@
  <input v-model.number="stockItemForm.quantity" type="number" min="1" class="form-control rounded-4" />
  </div>
  <div class="col-md-2">
- <button class="btn btn-outline-primary rounded-pill w-100" :disabled="addingStockItem" @click="addStockItem">Adicionar</button>
+ <button class="btn btn-outline-primary rounded-pill w-100" :disabled="isOrderLocked || addingStockItem" @click="addStockItem">Adicionar</button>
  </div>
  </div>
  </div>
@@ -294,7 +297,7 @@
  <input v-model.number="requestedProductForm.salePrice" type="number" min="0" step="0.01" class="form-control rounded-4" />
  </div>
  <div class="col-md-2">
- <button class="btn btn-outline-primary rounded-pill w-100" :disabled="addingRequestedProduct" @click="addRequestedProduct">Adicionar</button>
+ <button class="btn btn-outline-primary rounded-pill w-100" :disabled="isOrderLocked || addingRequestedProduct" @click="addRequestedProduct">Adicionar</button>
  </div>
  </div>
  </div>

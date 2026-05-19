@@ -272,6 +272,8 @@ export interface RequestedProduct {
   status?: string;
   purchase_cost?: number | null;
   purchaseCost?: number | null;
+  purchase_cash_account_id?: number | null;
+  purchaseCashAccountId?: number | null;
   finance_entry_id?: number | null;
   purchased_at?: string;
   denied_at?: string;
@@ -909,7 +911,6 @@ export interface Filters {
   withOrder?: boolean | string;
   withoutOrder?: boolean | string;
 }
-
 
 
 

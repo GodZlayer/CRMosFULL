@@ -1,0 +1,10 @@
+{
+  "ownerPid": 15568,
+  "childPids": [
+    15792,
+    15800
+  ],
+  "startedAt": "2026-05-19T11:37:59.135Z",
+  "apiPort": 3001,
+  "webPort": 5173
+}

@@ -45,7 +45,6 @@ const FINANCE_SHEET_ACCOUNT_SEEDS = [
   { code: "MAQ_AMARELA_PIX_CEL", name: "Maq Amarela/pix cel" },
   { code: "CAIXINHA_LOJA", name: "Caixinha loja" },
   { code: "R_COM_DENIO", name: "R$ com Denio" },
-  { code: "OUTROS_REGINA", name: "outros Regina" },
   { code: "BOLETOS", name: "boletos" },
   { code: "ARTHUR", name: "Arthur" }
 ];
@@ -61,7 +60,6 @@ const PAYMENT_METHOD_ACCOUNT_CODE_MAP = {
   MAQ_AMARELA_PIX_CEL: "MAQ_AMARELA_PIX_CEL",
   CAIXINHA_LOJA: "CAIXINHA_LOJA",
   R_COM_DENIO: "R_COM_DENIO",
-  OUTROS_REGINA: "OUTROS_REGINA",
   ARTHUR: "ARTHUR",
   BOLETOS: "BOLETOS",
   DINHEIRO: "CAIXINHA_LOJA",
@@ -75,7 +73,6 @@ const CASH_MANAGEMENT_BALANCE_CODE_MAP = {
   "maq amarela pix cel": "MAQ_AMARELA_PIX_CEL",
   "caixinha loja": "CAIXINHA_LOJA",
   "r com denio": "R_COM_DENIO",
-  "outros regina": "OUTROS_REGINA",
   boletos: "BOLETOS",
   arthur: "ARTHUR"
 };
@@ -136,6 +133,7 @@ export function createAppRepository(options = {}) {
   initAppSchema();
   seedAppDefaults();
   syncStores();
+  reconcileCompletedOrdersFinance(requireStoreContext({}).id);
   syncCompanyProfiles();
   syncLowStockNotifications();
   repairLegacyStockCatalogArtifacts();
@@ -165,6 +163,7 @@ export function createAppRepository(options = {}) {
     saveService,
     deleteService,
     saveOrder,
+    addOrderAttachments,
     deleteOrder,
     saveFinanceEntry,
     deleteFinanceEntry,
@@ -884,7 +883,7 @@ export function createAppRepository(options = {}) {
 
   function resolveCashAccountCodeByPaymentMethod(paymentMethod = "") {
     const method = normalizeText(paymentMethod).toUpperCase();
-    return PAYMENT_METHOD_ACCOUNT_CODE_MAP[method] || "OUTROS_REGINA";
+    return PAYMENT_METHOD_ACCOUNT_CODE_MAP[method] || "CAIXINHA_LOJA";
   }
 
   function resolveCashManagementAccountCode(metric = {}) {
@@ -983,8 +982,134 @@ export function createAppRepository(options = {}) {
         origin: "ORDER_COMPLETION",
         orderCode: order.code
       },
+      _allowOperationalFinanceEntryUpdate: true,
       _actor: actor
     });
+  }
+
+  function syncOrderRequestedProductCostEntries(order, storeId, actor = null) {
+    const orderId = Number(order?.id || 0);
+    if (!orderId || !storeId) {
+      return [];
+    }
+
+    const existingEntries = all(
+      `
+        SELECT *
+        FROM finance_entries
+        WHERE order_id = :orderId
+          AND entry_type = 'DESPESA'
+          AND category = 'Compra de produto'
+        ORDER BY id ASC
+      `,
+      { orderId }
+    );
+    const removedEntries = [];
+
+    for (const entry of existingEntries) {
+      const rawPayload = safeParseJson(entry.raw_payload, {});
+      const source = normalizeText(rawPayload.source || rawPayload.origin).toUpperCase();
+      if (source === 'ORDER_COMPLETION_REQUESTED_PRODUCT_COST') {
+        removedEntries.push(entry);
+      }
+    }
+
+    for (const entry of removedEntries) {
+      deleteFinanceEntry(Number(entry.id), { actor });
+    }
+
+    const shouldRegisterCosts = String(order.order_status || "") === "CONCLUIDA";
+    if (!shouldRegisterCosts) {
+      return [];
+    }
+
+    const requestedProducts = (Array.isArray(order.requested_products) ? order.requested_products : [])
+      .filter((requestedProduct) => String(requestedProduct.status || 'PENDENTE') !== 'NEGADO')
+      .map((requestedProduct) => {
+        const purchaseCost = Math.max(0, Number(requestedProduct.purchase_cost ?? requestedProduct.purchaseCost ?? 0));
+        const quantity = Math.max(1, Number(requestedProduct.quantity || 1));
+        return {
+          id: Number(requestedProduct.id || 0),
+          name: requestedProduct.product_name || requestedProduct.name || "Produto solicitado",
+          purchaseCost,
+          quantity,
+          totalCost: roundCurrency(purchaseCost * quantity),
+          cashAccountId: requestedProduct.purchase_cash_account_id || requestedProduct.purchaseCashAccountId || null
+        };
+      })
+      .filter((requestedProduct) => requestedProduct.totalCost > 0);
+
+    const totalCost = roundCurrency(requestedProducts.reduce((sum, requestedProduct) => sum + requestedProduct.totalCost, 0));
+    if (totalCost <= 0) {
+      return [];
+    }
+
+    const cashAccountId = requestedProducts.find((requestedProduct) => Number(requestedProduct.cashAccountId || 0) > 0)?.cashAccountId || null;
+    const paymentMethod = cashAccountId
+      ? (get("SELECT code FROM store_cash_accounts WHERE id = :id AND store_id = :storeId", { id: Number(cashAccountId), storeId })?.code || "CAIXINHA_LOJA")
+      : normalizeText(order.payment_method, "CAIXINHA_LOJA") || "CAIXINHA_LOJA";
+    const financeEntry = saveFinanceEntry({
+      entryType: "DESPESA",
+      category: "Compra de produto",
+      description: `Custos extras da OS ${order.code}`,
+      amount: totalCost,
+      entryDate: normalizeEntryDateInput(order.delivered_at || order.concluded_at || order.opened_at),
+      paymentMethod,
+      orderId,
+      storeId,
+      cashAccountId: cashAccountId ? Number(cashAccountId) : resolveCashAccountId(storeId, null, paymentMethod),
+      rawPayload: {
+        source: "ORDER_COMPLETION_REQUESTED_PRODUCT_COST",
+        orderCode: order.code,
+        productCount: requestedProducts.length,
+        products: requestedProducts
+      },
+      _actor: actor
+    });
+
+    return [financeEntry];
+  }
+
+  function syncCompletedOrderFinanceEntries(order, storeId, actor = null) {
+    const normalizedOrder = order ? repo.getOrder(Number(order.id || 0)) || order : null;
+    if (!normalizedOrder || !storeId) {
+      return;
+    }
+
+    syncOrderRevenueEntry(normalizedOrder, storeId, actor);
+    syncOrderRequestedProductCostEntries(normalizedOrder, storeId, actor);
+  }
+
+  function reconcileCompletedOrdersFinance(storeId, actor = null) {
+    if (!storeId) {
+      return;
+    }
+
+    const concludedOrders = all(
+      `
+        SELECT id
+        FROM orders
+        WHERE order_status = 'CONCLUIDA'
+        ORDER BY id ASC
+      `
+    );
+
+    for (const row of concludedOrders) {
+      const order = repo.getOrder(Number(row.id));
+      if (order) {
+        syncCompletedOrderFinanceEntries(order, storeId, actor);
+      }
+    }
+  }
+
+  function ensureOrderIsEditable(order, operationLabel = "editar") {
+    if (!order) {
+      throw new Error("OS nao encontrada.");
+    }
+
+    if (["CONCLUIDA", "CANCELADA"].includes(String(order.order_status || "").toUpperCase())) {
+      throw new Error(`A OS ${order.code} ja foi encerrada e nao pode mais ser ${operationLabel}.`);
+    }
   }
 
   function recalculateStoreCashAccountBalance(accountId) {
@@ -1232,6 +1357,7 @@ export function createAppRepository(options = {}) {
       `,
       { updatedAt: nowIso() }
     );
+    reconcileCompletedOrdersFinance(requireStoreContext({}).id);
   }
 
   function normalizeActor(actor) {
@@ -3643,6 +3769,100 @@ export function createAppRepository(options = {}) {
     );
   }
 
+  function isOrderCompletionFinanceEntry(entry) {
+    if (!entry) {
+      return false;
+    }
+    const rawPayload = safeParseJson(entry.raw_payload, {});
+    const source = normalizeText(rawPayload.source || rawPayload.origin).toUpperCase();
+    return ["ORDER_COMPLETION", "ORDER_COMPLETION_REQUESTED_PRODUCT_COST"].includes(source)
+      || (Number(entry.order_id || 0) > 0 && String(entry.category || "") === "Recebimento de OS");
+  }
+
+  function resolveOrderStatusBeforeCompletion(orderId) {
+    const logs = all(
+      `
+        SELECT before_state, after_state
+        FROM audit_logs
+        WHERE entity_type = 'ORDER'
+          AND entity_id = :orderId
+          AND action IN ('UPDATE', 'ORDER_TIMELINE_EVENT')
+        ORDER BY id DESC
+      `,
+      { orderId: Number(orderId) }
+    );
+
+    for (const log of logs) {
+      const beforeState = safeParseJson(log.before_state, {});
+      const afterState = safeParseJson(log.after_state, {});
+      const beforeStatus = normalizeText(beforeState.order_status || beforeState.orderStatus).toUpperCase();
+      const afterStatus = normalizeText(afterState.order_status || afterState.orderStatus).toUpperCase();
+      if (afterStatus === "CONCLUIDA" && beforeStatus && beforeStatus !== "CONCLUIDA" && beforeStatus !== "CANCELADA") {
+        return beforeStatus;
+      }
+    }
+
+    return "EM_ANDAMENTO";
+  }
+
+  function deleteOrderCompletionFinanceEntries(orderId, actor = null) {
+    const entries = all(
+      `
+        SELECT *
+        FROM finance_entries
+        WHERE order_id = :orderId
+        ORDER BY id ASC
+      `,
+      { orderId: Number(orderId) }
+    ).filter(isOrderCompletionFinanceEntry);
+
+    for (const entry of entries) {
+      deleteFinanceEntry(Number(entry.id), { actor });
+    }
+
+    return entries;
+  }
+
+  function revertOrderCompletionFromFinanceEntry(financeEntry, actor = null) {
+    const orderId = Number(financeEntry?.order_id || 0);
+    if (!orderId || !isOrderCompletionFinanceEntry(financeEntry)) {
+      return null;
+    }
+
+    const beforeState = repo.getOrder(orderId);
+    if (!beforeState) {
+      throw new Error("OS nao encontrada para reversao.");
+    }
+
+    const nextStatus = String(beforeState.order_status || "").toUpperCase() === "CONCLUIDA"
+      ? resolveOrderStatusBeforeCompletion(orderId)
+      : String(beforeState.order_status || "EM_ANDAMENTO").toUpperCase();
+    const removedEntries = deleteOrderCompletionFinanceEntries(orderId, actor);
+
+    run(
+      `
+        UPDATE orders
+        SET order_status = :orderStatus,
+            concluded_at = '',
+            delivered_at = '',
+            updated_at = :updatedAt
+        WHERE id = :id
+      `,
+      {
+        id: orderId,
+        orderStatus: nextStatus,
+        updatedAt: nowIso()
+      }
+    );
+
+    const afterState = repo.getOrder(orderId);
+    writeAuditLog(actor, "ORDER", orderId, "REVERT_COMPLETION", beforeState, afterState, {
+      code: beforeState.code,
+      removedFinanceEntries: removedEntries.map((entry) => Number(entry.id))
+    });
+    return { success: true, order: afterState, removedFinanceEntries: removedEntries.length };
+  }
+
   function revertFinancialTransaction(payload = {}, context = {}) {
     const actor = context.actor || context._actor || payload.actor || payload._actor;
     const financeEntryId = Number(payload.financeEntryId ?? payload.finance_entry_id ?? payload.id ?? 0) || 0;
@@ -3668,6 +3888,10 @@ export function createAppRepository(options = {}) {
     const rawPayload = safeParseJson(financeEntry.raw_payload, {});
     const source = normalizeText(rawPayload.source || rawPayload.origin).toUpperCase();
     const linkedPosSale = source === "POS_SALE" ? { id: Number(rawPayload.saleId || 0) } : findPosSaleByFinanceEntry(financeEntry);
+    const revertedOrder = revertOrderCompletionFromFinanceEntry(financeEntry, actor);
+    if (revertedOrder) {
+      return revertedOrder;
+    }
     if (source.startsWith("CATALOG_")) {
       throw new Error("Nao foi possivel localizar a reposicao de estoque vinculada. A reversao financeira isolada foi bloqueada para evitar divergencia no estoque.");
     }
@@ -3747,11 +3971,15 @@ export function createAppRepository(options = {}) {
     const actor = payload._actor;
     const store = requireStoreContext(payload);
     const beforeState = payload.id ? repo.getOrder(Number(payload.id)) : null;
+    if (beforeState) {
+      ensureOrderIsEditable(beforeState, "alterada");
+    }
     const order = baseSaveOrder(payload);
     if (!beforeState) {
       ensureOrderTask(order, store.id, actor);
     }
     syncOrderRevenueEntry(order, store.id, actor);
+    syncOrderRequestedProductCostEntries(order, store.id, actor);
     writeAuditLog(actor, "ORDER", order.id, beforeState ? "UPDATE" : "CREATE", beforeState, order, { code: order.code });
     recordOrderFlow(beforeState, order, actor);
     syncLowStockNotifications();
@@ -3765,6 +3993,15 @@ export function createAppRepository(options = {}) {
     writeAuditLog(actor, "ORDER", orderId, "DELETE", beforeState, result, { code: beforeState?.code || "" });
     syncLowStockNotifications();
     return result;
+  }
+
+  function addOrderAttachments(orderId, uploads = []) {
+    const order = repo.getOrder(Number(orderId));
+    if (!order) {
+      throw new Error("OS nao encontrada.");
+    }
+    ensureOrderIsEditable(order, "alterada");
+    return repo.addOrderAttachments(orderId, uploads);
   }
 
   function listFinanceCategories(entryType = "") {
@@ -3951,7 +4188,23 @@ export function createAppRepository(options = {}) {
 
     const movementCount = Number(get("SELECT COUNT(*) AS total FROM store_cash_movements WHERE cash_account_id = :id", { id: normalizedId })?.total || 0);
     if (movementCount > 0) {
-      throw new Error("Nao e permitido remover conta de caixa com movimentacoes registradas.");
+      run(
+        `
+          UPDATE store_cash_accounts
+          SET active = 0,
+              updated_at = :updatedAt
+          WHERE id = :id AND store_id = :storeId
+        `,
+        {
+          id: normalizedId,
+          storeId: Number(store.id),
+          updatedAt: nowIso()
+        }
+      );
+      const archived = get("SELECT * FROM store_cash_accounts WHERE id = :id", { id: normalizedId });
+      const result = { success: true, archived: true };
+      writeAuditLog(actor, "STORE_CASH_ACCOUNT", normalizedId, "ARCHIVE", beforeState, archived, { code: beforeState.code, movementCount });
+      return result;
     }
 
     run("DELETE FROM store_cash_accounts WHERE id = :id AND store_id = :storeId", { id: normalizedId, storeId: Number(store.id) });
@@ -4034,7 +4287,7 @@ export function createAppRepository(options = {}) {
   function saveFinanceEntry(payload = {}) {
     const actor = payload._actor;
     const beforeState = payload.id ? get("SELECT * FROM finance_entries WHERE id = :id", { id: Number(payload.id) }) : null;
-    if (beforeState) {
+    if (beforeState && payload._allowOperationalFinanceEntryUpdate !== true) {
       ensureFinanceEntryEditable(beforeState);
     }
     const store = requireStoreContext(payload);
@@ -4753,7 +5006,8 @@ export function createAppRepository(options = {}) {
 
   function readCell(row, headerMap, keys = []) {
     for (const key of keys) {
-      const index = headerMap[key];
+      const normalizedKey = legacySlug(key);
+      const index = headerMap[key] ?? headerMap[normalizedKey];
       if (index === undefined) {
         continue;
       }
@@ -6855,6 +7109,7 @@ export function createAppRepository(options = {}) {
     if (!order) {
       throw new Error("OS nao encontrada para registrar andamento.");
     }
+    ensureOrderIsEditable(order, "alterada");
 
     const actor = payload._actor || payload.actor;
     const title = String(payload.title || "").trim();
@@ -6894,6 +7149,9 @@ export function createAppRepository(options = {}) {
       );
       currentOrder = repo.getOrder(orderId);
       recordOrderFlow(order, currentOrder, actor);
+      if (String(nextStatus || "") === "CONCLUIDA") {
+        syncCompletedOrderFinanceEntries(currentOrder, requireStoreContext(payload).id, actor);
+      }
     }
 
     writeOrderTimelineEvent(orderId, eventType, title, description, color, eventDate, actor);
@@ -6916,6 +7174,7 @@ export function createAppRepository(options = {}) {
     if (!order) {
       throw new Error("OS não encontrada para atualizar a previsão.");
     }
+    ensureOrderIsEditable(order, "alterada");
 
     const normalizedDueDate = String(dueDate || "").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDueDate)) {
@@ -7018,6 +7277,7 @@ export function createAppRepository(options = {}) {
     if (!order) {
       throw new Error('OS nao encontrada.');
     }
+    ensureOrderIsEditable(order, "alterada");
     const name = normalizeText(payload.name || payload.product_name);
     const quantity = Math.max(1, toInteger(payload.quantity, 1));
     const salePrice = Math.max(0, toNumber(payload.salePrice ?? payload.sale_price) ?? 0);
@@ -7054,6 +7314,7 @@ export function createAppRepository(options = {}) {
     if (!order) {
       throw new Error('OS nao encontrada.');
     }
+    ensureOrderIsEditable(order, "alterada");
     const catalogItemId = Number(payload.catalogItemId || payload.catalog_item_id || 0);
     const quantity = Math.max(1, toInteger(payload.quantity, 1));
     const catalogItem = get('SELECT * FROM catalog_items WHERE id = :id', { id: catalogItemId });
@@ -7124,9 +7385,16 @@ export function createAppRepository(options = {}) {
       description: `Compra para OS ${order.code}: ${request.product_name}`,
       amount: costAmount * Math.max(1, Number(request.quantity || 1)),
       entryDate: getLocalDateString(),
-      paymentMethod: normalizeText(payload.paymentMethod, 'CAIXINHA_LOJA') || 'CAIXINHA_LOJA',
+      paymentMethod: normalizeText(
+        payload.paymentMethod,
+        request.purchase_cash_account_id
+          ? (get("SELECT code FROM store_cash_accounts WHERE id = :id AND store_id = :storeId", { id: Number(request.purchase_cash_account_id), storeId: store.id })?.code || 'CAIXINHA_LOJA')
+          : 'CAIXINHA_LOJA'
+      ) || 'CAIXINHA_LOJA',
       storeId: store.id,
-      cashAccountId: payload.cashAccountId ? Number(payload.cashAccountId) : resolveCashAccountId(store.id, null, payload.paymentMethod),
+      cashAccountId: payload.cashAccountId
+        ? Number(payload.cashAccountId)
+        : (request.purchase_cash_account_id ? Number(request.purchase_cash_account_id) : resolveCashAccountId(store.id, null, payload.paymentMethod)),
       rawPayload: {
         source: 'ORDER_REQUEST_PURCHASE',
         orderId: Number(order.id),

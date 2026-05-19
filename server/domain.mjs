@@ -223,7 +223,8 @@ function normalizeRequestedProducts(value) {
       quantity: Math.max(1, toInteger(item?.quantity, 1)),
       salePrice: Math.max(0, toNumber(item?.salePrice ?? item?.sale_price) ?? 0),
       status: normalizeText(item?.status, "PENDENTE") || "PENDENTE",
-      purchaseCost: toNumber(item?.purchaseCost ?? item?.purchase_cost)
+      purchaseCost: toNumber(item?.purchaseCost ?? item?.purchase_cost),
+      purchaseCashAccountId: toInteger(item?.purchaseCashAccountId ?? item?.purchase_cash_account_id, 0) || null
     }))
     .filter((item) => item.name);
 }

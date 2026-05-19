@@ -44,6 +44,62 @@ test("app repository creates low stock notifications and ignores used items", ()
   repository.close();
 });
 
+test("catalogo calcula margem de lucro sobre o preco de venda", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: false });
+
+  const created = repository.saveCatalogItem({
+    sku: "MARGEM-01",
+    name: "Produto margem",
+    category: "Teste",
+    itemCondition: "NOVA",
+    stockQuantity: 1,
+    minStock: 0,
+    costAmount: 60,
+    priceAmount: 100,
+    active: true
+  });
+  const listed = repository.listCatalogItems({}).find((item) => Number(item.id) === Number(created.id));
+  const detail = repository.getCatalogItem(created.id);
+
+  assert.equal(Number(listed.profit_percent), 40);
+  assert.equal(Number(detail.profit_percent), 40);
+  repository.close();
+});
+
+test("catalogo filtra limite minimo e abaixo do minimo separadamente", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: false });
+
+  repository.saveCatalogItem({
+    sku: "MINIMO-IGUAL",
+    name: "Produto no minimo",
+    category: "Teste",
+    itemCondition: "NOVA",
+    stockQuantity: 3,
+    minStock: 3,
+    costAmount: 10,
+    priceAmount: 20,
+    active: true
+  });
+  repository.saveCatalogItem({
+    sku: "MINIMO-ABAIXO",
+    name: "Produto abaixo",
+    category: "Teste",
+    itemCondition: "NOVA",
+    stockQuantity: 2,
+    minStock: 3,
+    costAmount: 10,
+    priceAmount: 20,
+    active: true
+  });
+
+  const lowStock = repository.listCatalogItems({ lowStockOnly: "true" }).map((item) => item.sku);
+  const belowMinStock = repository.listCatalogItems({ belowMinStockOnly: "true" }).map((item) => item.sku);
+
+  assert.deepEqual(lowStock, ["MINIMO-IGUAL"]);
+  assert.deepEqual(belowMinStock, ["MINIMO-ABAIXO"]);
+  repository.close();
+});
+
 test("app repository cria tarefa automatica ao abrir OS sem duplicar em edicoes", () => {
   const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
   const actor = getActor(repository);
@@ -195,7 +251,7 @@ test("app repository opens cash session and creates PDV sale with stock decremen
   const beforeStock = Number(item.stock_quantity);
   const openingSnapshot = repository
     .listStoreCashAccounts(store.id)
-    .filter((entry) => ["CC_PIX_PJ_MAQ_VERM", "MAQ_AMARELA_PIX_CEL", "CAIXINHA_LOJA", "R_COM_DENIO", "OUTROS_REGINA", "ARTHUR", "BOLETOS"].includes(String(entry.code)))
+    .filter((entry) => ["CC_PIX_PJ_MAQ_VERM", "MAQ_AMARELA_PIX_CEL", "CAIXINHA_LOJA", "R_COM_DENIO", "ARTHUR", "BOLETOS"].includes(String(entry.code)))
     .reduce((sum, entry) => sum + Number(entry.balance_amount || 0), 0);
 
   const cashSession = repository.openCashSession({ _actor: actor });
@@ -236,7 +292,7 @@ test("app repository fecha caixa com valores automaticos do saldo registrado", (
 
   const expectedClosing = repository
     .listStoreCashAccounts(store.id)
-    .filter((entry) => ["CC_PIX_PJ_MAQ_VERM", "MAQ_AMARELA_PIX_CEL", "CAIXINHA_LOJA", "R_COM_DENIO", "OUTROS_REGINA", "ARTHUR", "BOLETOS"].includes(String(entry.code)))
+    .filter((entry) => ["CC_PIX_PJ_MAQ_VERM", "MAQ_AMARELA_PIX_CEL", "CAIXINHA_LOJA", "R_COM_DENIO", "ARTHUR", "BOLETOS"].includes(String(entry.code)))
     .reduce((sum, entry) => sum + Number(entry.balance_amount || 0), 0);
 
   const closed = repository.closeCashSession(session.id, { _actor: actor });
@@ -313,6 +369,223 @@ test("app repository registra receita ao concluir OS na conta escolhida", () => 
   assert.equal(financeEntry.payment_method, "ARTHUR");
   assert.equal(Number(financeEntry.amount), Number(created.total_amount));
   assert.equal(Number(arthurAccount.balance_amount) >= Number(created.total_amount), true);
+  repository.close();
+});
+
+test("app repository reabre base com OS concluida e receita operacional ja sincronizada", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "crm-reconcile-finance-"));
+  const dbPath = join(tempDir, "crm.sqlite");
+
+  try {
+    const repository = createAppRepository({ dbPath, seedDemo: true });
+    const actor = getActor(repository);
+    const client = repository.listClients({})[0];
+    const item = repository.listCatalogItems({}).find((entry) => Number(entry.stock_quantity) > 1);
+
+    const created = repository.saveOrder({
+      clientId: client.id,
+      phoneSnapshot: client.phone,
+      equipment: "Notebook reconciliacao",
+      defect: "Tela apagada",
+      orderStatus: "ABERTA",
+      approvalStatus: "APROVADA",
+      actualAmount: 180,
+      serviceAmount: 80,
+      paymentMethod: "PIX",
+      items: [{ catalogItemId: item.id, quantity: 1, unitCost: item.cost_amount, unitPrice: item.price_amount }],
+      _actor: actor
+    });
+
+    const concluded = repository.saveOrder({
+      id: created.id,
+      clientId: client.id,
+      phoneSnapshot: client.phone,
+      equipment: "Notebook reconciliacao",
+      defect: "Tela apagada",
+      orderStatus: "CONCLUIDA",
+      approvalStatus: "APROVADA",
+      actualAmount: 180,
+      serviceAmount: 80,
+      paymentMethod: "PIX",
+      items: [{ catalogItemId: item.id, quantity: 1, unitCost: item.cost_amount, unitPrice: item.price_amount }],
+      _actor: actor
+    });
+    repository.close();
+
+    const reopened = createAppRepository({ dbPath, seedDemo: false });
+    const financeEntries = reopened.listFinanceEntries({}).filter((entry) => Number(entry.order_id) === Number(created.id) && entry.category === "Recebimento de OS");
+
+    assert.equal(financeEntries.length, 1);
+    assert.equal(Number(financeEntries[0].amount), Number(concluded.total_amount));
+    reopened.close();
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // Windows can keep the SQLite file handle briefly after close during tests.
+    }
+  }
+});
+
+test("app repository contabiliza custo de produto solicitado apenas ao concluir a OS", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const client = repository.listClients({})[0];
+  const item = repository.listCatalogItems({}).find((entry) => Number(entry.stock_quantity) > 1);
+  const store = repository.getCurrentStore();
+  const targetAccount = repository.listStoreCashAccounts(store.id).find((entry) => entry.code === "MAQ_AMARELA_PIX_CEL");
+
+  const created = repository.saveOrder({
+    clientId: client.id,
+    phoneSnapshot: client.phone,
+    equipment: "Notebook custo OS",
+    defect: "Nao inicia",
+    orderStatus: "ABERTA",
+    approvalStatus: "APROVADA",
+    actualAmount: 260,
+    serviceAmount: 90,
+    paymentMethod: "ARTHUR",
+    requestedProducts: [
+      {
+        name: "Tela LCD 15.6",
+        quantity: 2,
+        salePrice: 180,
+        purchaseCost: 75,
+        purchaseCashAccountId: targetAccount.id
+      },
+      {
+        name: "Flat extra",
+        quantity: 1,
+        salePrice: 60,
+        purchaseCost: 30,
+        purchaseCashAccountId: targetAccount.id
+      }
+    ],
+    items: [{ catalogItemId: item.id, quantity: 1, unitCost: item.cost_amount, unitPrice: item.price_amount }],
+    _actor: actor
+  });
+
+  const draftCosts = repository.listFinanceEntries({}).filter((entry) => Number(entry.order_id) === Number(created.id) && String(entry.raw_payload || "").includes("ORDER_COMPLETION_REQUESTED_PRODUCT_COST"));
+  assert.equal(draftCosts.length, 0);
+
+  const concluded = repository.saveOrder({
+    id: created.id,
+    clientId: client.id,
+    phoneSnapshot: client.phone,
+    equipment: "Notebook custo OS",
+    defect: "Nao inicia",
+    orderStatus: "CONCLUIDA",
+    approvalStatus: "APROVADA",
+    actualAmount: 260,
+    serviceAmount: 90,
+    paymentMethod: "ARTHUR",
+    requestedProducts: [
+      {
+        name: "Tela LCD 15.6",
+        quantity: 2,
+        salePrice: 180,
+        purchaseCost: 75,
+        purchaseCashAccountId: targetAccount.id
+      },
+      {
+        name: "Flat extra",
+        quantity: 1,
+        salePrice: 60,
+        purchaseCost: 30,
+        purchaseCashAccountId: targetAccount.id
+      }
+    ],
+    items: [{ catalogItemId: item.id, quantity: 1, unitCost: item.cost_amount, unitPrice: item.price_amount }],
+    _actor: actor
+  });
+
+  const financeEntries = repository.listFinanceEntries({}).filter((entry) => Number(entry.order_id) === Number(created.id));
+  const costEntry = financeEntries.find((entry) => String(entry.raw_payload || "").includes("ORDER_COMPLETION_REQUESTED_PRODUCT_COST"));
+  const revenueEntry = financeEntries.find((entry) => entry.category === "Recebimento de OS");
+
+  assert.ok(costEntry);
+  assert.ok(revenueEntry);
+  assert.equal(costEntry.payment_method, targetAccount.code);
+  assert.equal(Number(costEntry.cash_account_id), Number(targetAccount.id));
+  assert.equal(financeEntries.filter((entry) => String(entry.raw_payload || "").includes("ORDER_COMPLETION_REQUESTED_PRODUCT_COST")).length, 1);
+  assert.equal(Number(costEntry.amount), 180);
+  assert.equal(Number(revenueEntry.amount), Number(concluded.total_amount));
+  repository.close();
+});
+
+test("financeiro reverte conclusao de OS pela entrada ou pela despesa operacional", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const client = repository.listClients({})[0];
+  const store = repository.getCurrentStore();
+  const targetAccount = repository.listStoreCashAccounts(store.id).find((entry) => entry.code === "MAQ_AMARELA_PIX_CEL");
+
+  function concludeOrder(label) {
+    const created = repository.saveOrder({
+      clientId: client.id,
+      phoneSnapshot: client.phone,
+      equipment: `Notebook reversao OS ${label}`,
+      defect: "Nao liga",
+      orderStatus: "EM_ANDAMENTO",
+      approvalStatus: "APROVADA",
+      actualAmount: 260,
+      serviceAmount: 90,
+      paymentMethod: "PIX",
+      requestedProducts: [
+        {
+          name: `Compra extra ${label}`,
+          quantity: 2,
+          salePrice: 120,
+          purchaseCost: 40,
+          purchaseCashAccountId: targetAccount.id
+        }
+      ],
+      items: [],
+      _actor: actor
+    });
+
+    repository.saveOrder({
+      id: created.id,
+      clientId: client.id,
+      phoneSnapshot: client.phone,
+      equipment: `Notebook reversao OS ${label}`,
+      defect: "Nao liga",
+      orderStatus: "CONCLUIDA",
+      approvalStatus: "APROVADA",
+      actualAmount: 260,
+      serviceAmount: 90,
+      paymentMethod: "PIX",
+      requestedProducts: [
+        {
+          name: `Compra extra ${label}`,
+          quantity: 2,
+          salePrice: 120,
+          purchaseCost: 40,
+          purchaseCashAccountId: targetAccount.id
+        }
+      ],
+      items: [],
+      _actor: actor
+    });
+
+    const entries = repository.listFinanceEntries({ storeId: store.id }).filter((entry) => Number(entry.order_id) === Number(created.id));
+    return {
+      orderId: Number(created.id),
+      revenueEntry: entries.find((entry) => entry.category === "Recebimento de OS"),
+      costEntry: entries.find((entry) => String(entry.raw_payload || "").includes("ORDER_COMPLETION_REQUESTED_PRODUCT_COST"))
+    };
+  }
+
+  const byExpense = concludeOrder("despesa");
+  repository.revertFinancialTransaction({ financeEntryId: byExpense.costEntry.id }, { actor });
+  assert.equal(repository.getOrder(byExpense.orderId).order_status, "EM_ANDAMENTO");
+  assert.equal(repository.listFinanceEntries({ storeId: store.id }).filter((entry) => Number(entry.order_id) === byExpense.orderId).length, 0);
+
+  const byRevenue = concludeOrder("entrada");
+  repository.revertFinancialTransaction({ financeEntryId: byRevenue.revenueEntry.id }, { actor });
+  assert.equal(repository.getOrder(byRevenue.orderId).order_status, "EM_ANDAMENTO");
+  assert.equal(repository.listFinanceEntries({ storeId: store.id }).filter((entry) => Number(entry.order_id) === byRevenue.orderId).length, 0);
   repository.close();
 });
 
@@ -732,6 +1005,32 @@ test("transferencia interna aceita valor negativo e transfere a divida para a co
   assert.equal(Number(refreshedSource.balance_amount || 0), Number(beforeSource.balance_amount || 0) + 25);
   assert.equal(Number(refreshedDestination.balance_amount || 0), Number(beforeDestination.balance_amount || 0) - 25);
   assert.equal(transferMovements.length, 2);
+  repository.close();
+});
+
+test("conta de caixa com movimentacoes e arquivada ao remover", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const store = repository.getCurrentStore();
+  const account = repository.listStoreCashAccounts(store.id).find((entry) => entry.code === "BOLETOS");
+
+  repository.saveStoreCashMovement({
+    storeId: store.id,
+    cashAccountId: account.id,
+    movementType: "MANUAL",
+    entryType: "RECEITA",
+    description: "Movimento para arquivar conta",
+    amount: 10,
+    movementDate: "2026-05-07",
+    _actor: actor
+  });
+
+  const result = repository.deleteStoreCashAccount(account.id, { actor, storeId: store.id });
+  const archived = repository.listStoreCashAccounts(store.id).find((entry) => Number(entry.id) === Number(account.id));
+
+  assert.equal(result.success, true);
+  assert.equal(result.archived, true);
+  assert.equal(Number(archived.active), 0);
   repository.close();
 });
 

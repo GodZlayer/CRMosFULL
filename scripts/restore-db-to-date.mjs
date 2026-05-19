@@ -7,6 +7,7 @@ const repoRoot = process.cwd();
 const defaultDbPath = path.join(repoRoot, "server/storage/database/crm.sqlite");
 const dbPath = process.argv[2] ? path.resolve(process.argv[2]) : defaultDbPath;
 const cutoffInput = process.argv[3] || "2026-04-28T00:00:00-03:00";
+const restoreScope = String(process.argv[4] || "all").toLowerCase();
 const cutoffTime = Date.parse(cutoffInput);
 
 if (Number.isNaN(cutoffTime)) {
@@ -45,6 +46,7 @@ const logs = db
 const summary = {
   backupPath,
   cutoff: cutoffInput,
+  scope: restoreScope,
   processedLogs: logs.length,
   deletedRows: 0,
   restoredRows: 0,
@@ -209,6 +211,10 @@ try {
     const entityId = Number(log.entity_id || 0) || null;
     const beforeState = parseJson(log.before_state, null);
 
+    if (restoreScope === "stock" && !["CATALOG_ITEM", "CATALOG_STOCK_BATCH"].includes(entityType)) {
+      continue;
+    }
+
     if (entityType === "SYSTEM_TRANS" || entityType === "SESSION_PROF") {
       continue;
     }
@@ -317,7 +323,9 @@ try {
   }
 
   refreshAllCatalogStockQuantities();
-  recalcAllCashAccounts();
+  if (restoreScope !== "stock") {
+    recalcAllCashAccounts();
+  }
 
   db.exec("COMMIT");
 } catch (error) {

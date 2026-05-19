@@ -116,6 +116,10 @@ test("importOperationalOds accepts the legacy workbook and restores operational 
     assert.ok(repo.listClients({}).length > 0);
     assert.ok(repo.listOrders({}).length > 0);
     assert.ok(repo.listPosSales({}).length > 0);
+    const currentStore = repo.getCurrentStore();
+    const importedAccounts = repo.listStoreCashAccounts(currentStore.id);
+    assert.equal(Number(importedAccounts.find((account) => account.code === "CAIXINHA_LOJA")?.balance_amount || 0), 150);
+    assert.equal(Number(importedAccounts.find((account) => account.code === "CC_PIX_PJ_MAQ_VERM")?.balance_amount || 0), 3509.22);
 
     const exported = repo.exportOperationalOds({ _actor: { id: 1, name: "QA" } });
     const workbook = parseOdsBuffer(exported.buffer);

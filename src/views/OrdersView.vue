@@ -78,7 +78,7 @@
  <i class="fa-solid fa-print me-2"></i>
  Imprimir
  </button>
- <button class="btn btn-outline-light rounded-pill" @click="openEditById(selectedOrder.id)">
+ <button class="btn btn-outline-light rounded-pill" :disabled="selectedOrder.order_status === 'CONCLUIDA'" @click="openEditById(selectedOrder.id)">
  <i class="fa-solid fa-pen me-2"></i>
  Editar
  </button>
@@ -522,7 +522,7 @@
  <div v-if="form.requestedProducts.length" class="d-grid gap-3">
  <div v-for="(requestedProduct, index) in form.requestedProducts" :key="'requested-' + index" class="panel-card bg-light-subtle border border-secondary-subtle">
  <div class="row g-3 align-items-end">
- <div class="col-lg-6">
+ <div class="col-lg-4">
  <label class="form-label fw-semibold">Nome do produto</label>
  <input v-model="requestedProduct.name" class="form-control rounded-4" placeholder="Ex.: Tela 15.6 Full HD para notebook" />
  </div>
@@ -530,9 +530,22 @@
  <label class="form-label fw-semibold">Qtd</label>
  <input v-model.number="requestedProduct.quantity" type="number" min="1" class="form-control rounded-4" />
  </div>
- <div class="col-lg-3">
+ <div class="col-lg-2">
  <label class="form-label fw-semibold">Valor de venda</label>
  <input v-model.number="requestedProduct.salePrice" type="number" min="0" step="0.01" class="form-control rounded-4" />
+ </div>
+ <div class="col-lg-2">
+ <label class="form-label fw-semibold">Custo unitário</label>
+ <input v-model.number="requestedProduct.purchaseCost" type="number" min="0" step="0.01" class="form-control rounded-4" />
+ </div>
+ <div class="col-lg-2">
+ <label class="form-label fw-semibold">Conta de débito</label>
+ <select v-model.number="requestedProduct.purchaseCashAccountId" class="form-select rounded-4">
+ <option :value="null">Selecione</option>
+ <option v-for="account in storeCashAccountOptions" :key="account.id" :value="account.id">
+ {{ account.label || account.name || account.code }}
+ </option>
+ </select>
  </div>
  <div class="col-lg-1 text-end">
  <button type="button" class="btn btn-outline-danger rounded-pill w-100" @click="removeRequestedProduct(index)">
@@ -540,6 +553,7 @@
  </button>
  </div>
  </div>
+ <div class="small mt-2">Esse custo só entra no financeiro quando a OS for concluída.</div>
  </div>
  </div>
  <div v-else>Nenhum produto pendente de encomenda.</div>
@@ -669,6 +683,8 @@ type EditableRequestedProduct = RequestedProduct & {
  name: string;
  quantity: number;
  salePrice: number;
+ purchaseCost: number;
+ purchaseCashAccountId: number | null;
  status: string;
 };
 
@@ -698,7 +714,6 @@ const fallbackPaymentMethods = [
  { code: "MAQ_AMARELA_PIX_CEL", label: "Maq Amarela/pix cel" },
  { code: "CAIXINHA_LOJA", label: "Caixinha loja" },
  { code: "R_COM_DENIO", label: "R$ com Denio" },
- { code: "OUTROS_REGINA", label: "outros Regina" },
  { code: "ARTHUR", label: "Arthur" },
  { code: "BOLETOS", label: "boletos" }
 ];
@@ -779,6 +794,7 @@ const paymentMethodOptions = computed(() => {
  ? base
  : [...base, { code: form.paymentMethod, label: form.paymentMethod }];
 });
+const storeCashAccountOptions = computed(() => session.meta?.storeCashAccounts?.length ? session.meta.storeCashAccounts : []);
 const selectedClientLabel = computed(() => {
  if (clientMode.value === "new") {
  return newClient.name || "Novo cliente";
@@ -786,6 +802,7 @@ const selectedClientLabel = computed(() => {
  return clients.value.find((item) => item.id === Number(form.clientId))?.name || "Cliente não selecionado";
 });
 const selectedClientAddress = computed(() => clients.value.find((item) => item.id === Number(form.clientId))?.address || "");
+const selectedOrderLocked = computed(() => String(selectedOrder.value?.order_status || "").toUpperCase() === "CONCLUIDA");
 
 function closeActionMenu(target: HTMLElement | null) {
  target?.closest("details")?.removeAttribute("open");
@@ -826,6 +843,21 @@ function dueDateLabel(value: string | null | undefined) {
 
 function quoteLabel(value: number | null | undefined) {
  return value === null || value === undefined ? "Sem orçamento" : currency(value);
+}
+
+function cashAccountLabel(accountId: number | null | undefined) {
+ if (!accountId) {
+ return "Conta não selecionada";
+ }
+ return storeCashAccountOptions.value.find((item) => Number(item.id) === Number(accountId))?.label
+  || storeCashAccountOptions.value.find((item) => Number(item.id) === Number(accountId))?.name
+  || storeCashAccountOptions.value.find((item) => Number(item.id) === Number(accountId))?.code
+  || "Conta não selecionada";
+}
+
+function resolveDefaultRequestedProductCashAccountId() {
+ const accountByPaymentMethod = storeCashAccountOptions.value.find((item) => item.code === form.paymentMethod);
+ return Number(accountByPaymentMethod?.id || storeCashAccountOptions.value[0]?.id || 0) || null;
 }
 
 function buildPredictedDueDate(totalMinutes: number) {
@@ -907,6 +939,8 @@ function createRequestedProductRow(): EditableRequestedProduct {
  name: "",
  quantity: 1,
  salePrice: 0,
+ purchaseCost: 0,
+ purchaseCashAccountId: resolveDefaultRequestedProductCashAccountId(),
  status: 'PENDENTE'
  };
 }
@@ -1084,6 +1118,10 @@ function restoreDraft() {
  name: String(item.name || item.product_name || ""),
  quantity: Math.max(1, Number(item.quantity || 1)),
  salePrice: Number(item.salePrice || item.sale_price || 0),
+ purchaseCost: Number(item.purchaseCost || item.purchase_cost || 0),
+ purchaseCashAccountId: item.purchaseCashAccountId !== undefined || item.purchase_cash_account_id !== undefined
+  ? (Number(item.purchaseCashAccountId || item.purchase_cash_account_id || 0) || null)
+  : null,
  status: String(item.status || 'PENDENTE')
  }))
  : [];
@@ -1160,6 +1198,8 @@ function hydrateForm(order: OrderDetail) {
  name: String(item.product_name || item.name || ""),
  quantity: Math.max(1, Number(item.quantity || 1)),
  salePrice: Number(item.sale_price || item.salePrice || 0),
+ purchaseCost: Number(item.purchase_cost || item.purchaseCost || 0),
+ purchaseCashAccountId: Number(item.purchase_cash_account_id || item.purchaseCashAccountId || 0) || null,
  status: String(item.status || 'PENDENTE')
  }));
  form.withoutQuote = order.quote_amount === null || order.quote_amount === undefined;
@@ -1181,6 +1221,9 @@ function hydrateForm(order: OrderDetail) {
 async function openEditById(orderId: number) {
  try {
  const response = await api.order(orderId);
+ if (String(response.data.order_status || "").toUpperCase() === "CONCLUIDA") {
+  throw new Error("A OS já foi concluída e não pode mais ser editada.");
+ }
  showDetail.value = false;
  hydrateForm(response.data);
  restoreDraft();
@@ -1325,11 +1368,11 @@ async function saveOrder() {
   preApproved: form.preApproved,
   quoteAmount: resolvedQuoteAmount.value,
   withoutQuote: form.withoutQuote,
-  paymentMethod: form.paymentMethod,
-  notes: composeOrderNotes("", form.accessories, form.accessories.includes("Outro") ? form.accessoriesOther : ""),
+ paymentMethod: form.paymentMethod,
+ notes: composeOrderNotes("", form.accessories, form.accessories.includes("Outro") ? form.accessoriesOther : ""),
  items: form.items.filter((item) => item.catalogItemId).map((item) => ({ catalogItemId: item.catalogItemId, quantity: item.quantity })),
  services: form.services.filter((item) => item.serviceId).map((item) => ({ serviceId: item.serviceId, quantity: item.quantity })),
- requestedProducts: form.requestedProducts.filter((item) => item.name.trim()).map((item) => ({ id: item.id, name: item.name.trim(), quantity: item.quantity, salePrice: item.salePrice, status: item.status })),
+ requestedProducts: form.requestedProducts.filter((item) => item.name.trim()).map((item) => ({ id: item.id, name: item.name.trim(), quantity: item.quantity, salePrice: item.salePrice, purchaseCost: item.purchaseCost, purchaseCashAccountId: item.purchaseCashAccountId, status: item.status })),
   photoUploads: orderAttachments.value
  });
 
@@ -1446,9 +1489,13 @@ const columns = [
  return;
  }
  if (target?.closest(".action-edit")) {
- closeActionMenu(target);
- await openEditById(Number(rowData.id));
- return;
+  closeActionMenu(target);
+  if (String(rowData.order_status || "").toUpperCase() === "CONCLUIDA") {
+   await notifyError(new Error("A OS já foi concluída e não pode mais ser editada."));
+   return;
+  }
+  await openEditById(Number(rowData.id));
+  return;
  }
  if (target?.closest(".action-print")) {
  closeActionMenu(target);

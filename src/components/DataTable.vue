@@ -385,6 +385,14 @@ const displayColumns = computed(() =>
       return true;
     }
     return visibleFieldSet.value.has(String(column.field));
+  }).map((column) => {
+    if (!column.field || column.field === "actions") {
+      return column;
+    }
+    return {
+      ...column,
+      visible: true
+    };
   })
 );
 

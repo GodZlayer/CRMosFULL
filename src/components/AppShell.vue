@@ -436,18 +436,6 @@ onMounted(async () => {
  }
 
  await notifications.load();
- const popupKey = `be-low-stock-popup-${new Date().toISOString().slice(0, 10)}`;
- if (notifications.lowStockItems.length && !window.sessionStorage.getItem(popupKey) && window.Swal) {
- window.sessionStorage.setItem(popupKey, "1");
- await window.Swal.fire({
-  icon: "warning",
-  title: "Itens em baixa no estoque",
-  html: notifications.lowStockItems
-  .slice(0, 5)
-  .map((item) => `<div class='text-start'><strong>${item.title}</strong><br/><span>${item.message}</span></div>`)
-  .join("<hr class='my-2'/>")
- });
- }
 });
 
 onBeforeUnmount(() => {

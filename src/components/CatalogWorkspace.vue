@@ -25,10 +25,12 @@
  </div>
  <div class="row g-3">
  <div class="col-md-6">
- <label class="form-label fw-semibold d-flex align-items-center gap-2">
- <input v-model="filters.lowStockOnly" class="form-check-input mt-0" type="checkbox" />
- Mostrar apenas baixo estoque
- </label>
+ <label class="form-label fw-semibold">Estoque</label>
+ <select v-model="filters.stockLevel" class="form-select rounded-4">
+ <option value="">Todos</option>
+ <option value="low">Baixo estoque (no limite mínimo)</option>
+ <option value="below">Abaixo do mínimo</option>
+ </select>
  </div>
  <div class="col-md-6">
  <label class="form-label fw-semibold d-flex align-items-center gap-2">
@@ -81,7 +83,7 @@
  :columns="columns"
  :allow-csv="true"
  :allow-print="true"
- :allow-auto-columns="true"
+ :allow-auto-columns="false"
  :print-summary-fields="inventoryPrintSummaryFields"
  :selectable-rows="true"
  :selected-row-keys="selectedIds"
@@ -718,7 +720,7 @@ const filters = reactive({
  search: "",
  category: "",
  itemCondition: "",
- lowStockOnly: false,
+ stockLevel: "",
  activeOnly: false,
  onlyStoreInventory: !!props.storeInventoryOnly
 });
@@ -761,7 +763,7 @@ const lotEditForm = reactive({
 const stockCostValue = computed(() => items.value.reduce((sum, item) => sum + stockCostForItem(item), 0));
 const stockSaleValue = computed(() => items.value.reduce((sum, item) => sum + stockSaleForItem(item), 0));
 const lowStockCount = computed(() => items.value.filter((item) => Number(item.stock_quantity) <= Number(item.min_stock)).length);
-const averageProfit = computed(() => items.value.length ? items.value.reduce((sum, item) => sum + Number(item.profit_percent || 0), 0) / items.value.length : 0);
+const averageProfit = computed(() => stockSaleValue.value > 0 ? ((stockSaleValue.value - stockCostValue.value) / stockSaleValue.value) * 100 : 0);
 const averageProfitLabel = computed(() => percentLabel(averageProfit.value));
 const subcategoryOptions = computed(() => session.meta?.catalogSubcategoriesMap?.[form.category] || []);
 const showStockSetupFields = computed(() => form.locationType === "ESTOQUE");
@@ -850,6 +852,8 @@ const columns = [
  { title: "Qnt atual", field: "stock_quantity", hozAlign: "center", minWidth: 110 },
  { title: "Total custo", field: "stock_cost_value", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) },
  { title: "Total venda", field: "stock_value", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) },
+ { title: "Margem unit.", field: "unit_margin", hozAlign: "right", minWidth: 140, visible: false, formatter: (cell: any) => currency(cell.getValue()) },
+ { title: "Lucro %", field: "profit_percent", hozAlign: "right", minWidth: 120, visible: false, formatter: (cell: any) => percentLabel(Number(cell.getValue() || 0)) },
  { title: "Compra atual", field: "cost_amount", hozAlign: "right", minWidth: 140, visible: false, formatter: (cell: any) => currency(cell.getValue()) },
  { title: "Venda atual", field: "price_amount", hozAlign: "right", minWidth: 140, visible: false, formatter: (cell: any) => currency(cell.getValue()) }
 ];
@@ -1033,7 +1037,8 @@ async function loadItems() {
  search: filters.search,
  category: filters.category,
  itemCondition: filters.itemCondition,
- lowStockOnly: filters.lowStockOnly,
+ lowStockOnly: filters.stockLevel === "low",
+ belowMinStockOnly: filters.stockLevel === "below",
  activeOnly: filters.activeOnly,
  storeInventoryOnly: props.storeInventoryOnly || filters.onlyStoreInventory
  });
@@ -1057,7 +1062,7 @@ function clearFilters() {
  search: "",
  category: "",
  itemCondition: "",
- lowStockOnly: false,
+ stockLevel: "",
  activeOnly: false,
  onlyStoreInventory: !!props.storeInventoryOnly
  });
@@ -1552,7 +1557,7 @@ async function removeSelectedItems() {
 }
 
 watch(
- () => [filters.lowStockOnly, filters.activeOnly, filters.onlyStoreInventory],
+ () => [filters.stockLevel, filters.activeOnly, filters.onlyStoreInventory],
  () => {
  void loadItems();
  }

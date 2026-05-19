@@ -506,7 +506,7 @@ export const api = {
     });
   },
   deleteStoreCashAccount(id: number) {
-    return request<{ success: boolean }>(`/api/store-cash/accounts/${id}`, {
+    return request<{ success: boolean; archived?: boolean }>(`/api/store-cash/accounts/${id}`, {
       method: "DELETE"
     });
   },
