@@ -75,6 +75,21 @@
  </div>
  </div>
 
+ <SelectionActionBar class="mb-4" :selected-count="selectedCount" item-label="item(ns)" @select-all="selectAllItems" @clear="clearSelection">
+ <button class="btn btn-outline-secondary rounded-pill" :disabled="!selectedCount" @click="showSelectionStatus = true">
+ <i class="fa-solid fa-chart-pie me-2"></i>
+ Status
+ </button>
+ <button class="btn btn-outline-primary rounded-pill" :disabled="!selectedCount" @click="openBatchRestock">
+ <i class="fa-solid fa-boxes-stacked me-2"></i>
+ Repor em lote
+ </button>
+ <button class="btn btn-danger rounded-pill" :disabled="!selectedCount" @click="removeSelectedItems">
+ <i class="fa-solid fa-trash me-2"></i>
+ Excluir selecionados
+ </button>
+ </SelectionActionBar>
+
  <DataTable
  ref="catalogTable"
  :title="tableTitle"
@@ -99,16 +114,52 @@
  @row-click="openDetail"
  />
 
- <SelectionActionBar class="mt-4" :selected-count="selectedCount" item-label="item(ns)" @select-all="selectAllItems" @clear="clearSelection">
- <button class="btn btn-outline-primary rounded-pill" :disabled="!selectedCount" @click="openBatchRestock">
- <i class="fa-solid fa-boxes-stacked me-2"></i>
- Repor em lote
+ <ModalDialog v-model="showSelectionStatus" title="Status dos itens selecionados" :eyebrow="eyebrow" size="xl">
+ <div class="d-grid gap-3">
+ <div class="table-responsive">
+ <table class="table align-middle">
+ <thead>
+ <tr>
+ <th>Nome</th>
+ <th class="text-end">Custo un.</th>
+ <th class="text-end">Custo total</th>
+ <th class="text-end">Venda un.</th>
+ <th class="text-end">Venda total</th>
+ </tr>
+ </thead>
+ <tbody>
+ <tr v-for="item in selectedRows" :key="item.id">
+ <td>
+ <div class="fw-semibold">{{ item.name }}</div>
+ <div class="small">{{ item.sku || 'Sem SKU' }}<span v-if="item.brand"> | {{ item.brand }}</span></div>
+ </td>
+ <td class="text-end">{{ currency(item.cost_amount) }}</td>
+ <td class="text-end">{{ currency(stockCostForItem(item)) }}</td>
+ <td class="text-end">{{ currency(item.price_amount) }}</td>
+ <td class="text-end">{{ currency(stockSaleForItem(item)) }}</td>
+ </tr>
+ <tr v-if="selectedRows.length" class="fw-bold border-top">
+ <td>Total</td>
+ <td class="text-end">{{ currency(selectedStatusSummary.unitCostTotal) }}</td>
+ <td class="text-end">{{ currency(selectedStatusSummary.costTotal) }}</td>
+ <td class="text-end">{{ currency(selectedStatusSummary.unitSaleTotal) }}</td>
+ <td class="text-end">{{ currency(selectedStatusSummary.saleTotal) }}</td>
+ </tr>
+ <tr v-if="!selectedRows.length">
+ <td colspan="5" class="text-secondary">Nenhum item selecionado.</td>
+ </tr>
+ </tbody>
+ </table>
+ </div>
+
+ <div class="d-flex justify-content-end">
+ <button type="button" class="btn btn-primary rounded-pill" @click="showSelectionStatus = false">
+ <i class="fa-solid fa-check me-2"></i>
+ Fechar conferência
  </button>
- <button class="btn btn-danger rounded-pill" :disabled="!selectedCount" @click="removeSelectedItems">
- <i class="fa-solid fa-trash me-2"></i>
- Excluir selecionados
- </button>
- </SelectionActionBar>
+ </div>
+ </div>
+ </ModalDialog>
 
  <ModalDialog v-model="showDetail" title="Perfil completo do item" :eyebrow="eyebrow" size="xl">
  <div v-if="selectedItem" class="d-grid gap-4">
@@ -716,6 +767,7 @@ const showDetail = ref(false);
 const showForm = ref(false);
 const showRestock = ref(false);
 const showLotEdit = ref(false);
+const showSelectionStatus = ref(false);
 const showBatchRestock = ref(false);
 const showBatchCreate = ref(false);
 const restockTarget = ref<CatalogItemDetail | null>(null);
@@ -784,6 +836,24 @@ const selectedRows = computed(() => selectedIds.value.map((id) => selectedRowsMa
 const selectedCount = computed(() => selectedIds.value.length);
 const defaultCashAccountId = computed(() => Number(cashAccountOptions.value[0]?.id || 0));
 const batchCreateEstimatedExpense = computed(() => batchCreateRows.value.reduce((sum, item) => sum + (item.generateFinanceEntry ? (Number(item.stockQuantity || 0) * Number(item.costAmount || 0)) : 0), 0));
+const selectedStatusSummary = computed(() => {
+ const unitCostTotal = selectedRows.value.reduce((sum, item) => sum + Number(item.cost_amount || 0), 0);
+ const unitSaleTotal = selectedRows.value.reduce((sum, item) => sum + Number(item.price_amount || 0), 0);
+ const costTotal = selectedRows.value.reduce((sum, item) => sum + stockCostForItem(item), 0);
+ const saleTotal = selectedRows.value.reduce((sum, item) => sum + stockSaleForItem(item), 0);
+ const marginTotal = saleTotal - costTotal;
+ return {
+ count: selectedRows.value.length,
+ quantity: selectedRows.value.reduce((sum, item) => sum + Number(item.stock_quantity || 0), 0),
+ unitCostTotal,
+ unitSaleTotal,
+ costTotal,
+ saleTotal,
+ marginTotal,
+ marginPercent: saleTotal > 0 ? (marginTotal / saleTotal) * 100 : 0,
+ lowStockCount: selectedRows.value.filter((item) => Number(item.stock_quantity) <= Number(item.min_stock)).length
+ };
+});
 
 function stockCostForItem(item: Pick<CatalogItem, "stock_quantity" | "cost_amount" | "stock_cost_value"> | null) {
  if (!item) return 0;
