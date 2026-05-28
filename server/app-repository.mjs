@@ -2307,6 +2307,7 @@ export function createAppRepository(options = {}) {
         a.code AS cash_account_code,
         a.name AS cash_account_name,
         s.code AS sale_code,
+        sale_items.item_summary AS item_summary,
         f.category AS finance_category,
         f.payment_method AS finance_payment_method,
         f.order_id AS finance_order_id,
@@ -2314,6 +2315,19 @@ export function createAppRepository(options = {}) {
       FROM store_cash_movements m
       LEFT JOIN store_cash_accounts a ON a.id = m.cash_account_id
       LEFT JOIN pos_sales s ON s.id = m.sale_id
+      LEFT JOIN (
+        SELECT
+          sale_id,
+          GROUP_CONCAT(
+            CASE
+              WHEN quantity > 1 THEN CAST(quantity AS TEXT) || 'x ' || item_name
+              ELSE item_name
+            END,
+            ', '
+          ) AS item_summary
+        FROM pos_sale_items
+        GROUP BY sale_id
+      ) sale_items ON sale_items.sale_id = m.sale_id
       LEFT JOIN finance_entries f ON f.id = m.finance_entry_id
       LEFT JOIN stock_replenishments sr ON sr.finance_entry_id = f.id
       LEFT JOIN stock_replenishments sr_extra ON sr_extra.extra_finance_entry_id = f.id
@@ -2389,6 +2403,7 @@ export function createAppRepository(options = {}) {
       cash_account_id: entry.cash_account_id ? Number(entry.cash_account_id) : null,
       cash_account_name: normalizeText(entry.cash_account_name),
       cash_account_code: normalizeText(entry.cash_account_code),
+      item_summary: normalizeText(entry.item_summary),
       replenishment_id: entry.replenishment_id ? Number(entry.replenishment_id) : null,
       finance_entry_id: entry.finance_entry_id ? Number(entry.finance_entry_id) : null,
       order_code: normalizeText(entry.sale_code),
@@ -2685,13 +2700,31 @@ export function createAppRepository(options = {}) {
         replenishmentsByFinanceEntryId.set(Number(row.extra_finance_entry_id), Number(row.id));
       }
     });
+    const saleItemSummaryBySaleId = new Map(
+      all(`
+        SELECT
+          sale_id,
+          GROUP_CONCAT(
+            CASE
+              WHEN quantity > 1 THEN CAST(quantity AS TEXT) || 'x ' || item_name
+              ELSE item_name
+            END,
+            ', '
+          ) AS item_summary
+        FROM pos_sale_items
+        GROUP BY sale_id
+      `).map((row) => [Number(row.sale_id), normalizeText(row.item_summary)])
+    );
 
     return repo.listFinanceEntries(filters).map((entry) => {
       const cashAccount = entry.cash_account_id ? accountsById.get(Number(entry.cash_account_id)) : null;
+      const rawPayload = safeParseJson(entry.raw_payload, {});
+      const saleId = Number(rawPayload.saleId || rawPayload.sale_id || 0);
       return {
         ...entry,
         cash_account_name: normalizeText(cashAccount?.name),
         cash_account_code: normalizeText(cashAccount?.code),
+        item_summary: saleId ? normalizeText(saleItemSummaryBySaleId.get(saleId)) : "",
         replenishment_id: replenishmentsByFinanceEntryId.get(Number(entry.id)) || null,
         finance_entry_id: Number(entry.id || 0) || null
       };
@@ -2767,6 +2800,21 @@ export function createAppRepository(options = {}) {
   }
 
   function listPosSales(filters = {}) {
+    function listSaleItems(saleId) {
+      return all("SELECT * FROM pos_sale_items WHERE sale_id = :saleId ORDER BY id ASC", { saleId: Number(saleId || 0) });
+    }
+
+    function formatSaleItems(items = []) {
+      return items
+        .map((item) => {
+          const quantity = Number(item.quantity || 0);
+          const quantityLabel = quantity > 1 ? `${quantity}x ` : "";
+          return `${quantityLabel}${normalizeText(item.item_name, "Item vendido")}`;
+        })
+        .filter(Boolean)
+        .join(", ");
+    }
+
     const rows = all(`
       SELECT
         ps.*,
@@ -2790,6 +2838,13 @@ export function createAppRepository(options = {}) {
         return false;
       }
       return isBetweenDates(String(row.created_at || "").slice(0, 10), filters.fromDate, filters.toDate);
+    }).map((row) => {
+      const items = listSaleItems(row.id);
+      return {
+        ...row,
+        items,
+        item_summary: formatSaleItems(items)
+      };
     });
   }
 
@@ -2903,11 +2958,19 @@ export function createAppRepository(options = {}) {
 
     return transaction(() => {
       const { year, month, day } = getLocalDateParts();
-      const countToday = get(
-        "SELECT COUNT(*) AS total FROM pos_sales WHERE substr(created_at, 1, 10) = :today",
-        { today: getLocalDateString() }
-      ).total;
-      const code = `PDV-${year}${month}${day}-${String(Number(countToday) + 1).padStart(4, "0")}`;
+      const codePrefix = `PDV-${year}${month}${day}-`;
+      const lastDailySequence = get(
+        `
+          SELECT COALESCE(MAX(CAST(substr(code, :suffixStart) AS INTEGER)), 0) AS sequence
+          FROM pos_sales
+          WHERE code LIKE :codePattern
+        `,
+        {
+          suffixStart: codePrefix.length + 1,
+          codePattern: `${codePrefix}%`
+        }
+      ).sequence;
+      const code = `${codePrefix}${String(Number(lastDailySequence || 0) + 1).padStart(4, "0")}`;
       const timestamp = nowIso();
       const preparedItems = items.map((item) => {
         const itemType = String(item.itemType || item.item_type || "PRODUCT").toUpperCase();
@@ -3123,6 +3186,7 @@ export function createAppRepository(options = {}) {
 
   function deletePosSale(saleId, context = {}) {
     const actor = context.actor || context._actor;
+    const isReversal = Boolean(context.reversal || context.reason === "REVERSAL");
     const beforeState = getPosSale(saleId);
     if (!beforeState) {
       throw new Error("Venda do PDV nao encontrada.");
@@ -3163,13 +3227,23 @@ export function createAppRepository(options = {}) {
         { description: `Venda ${beforeState.code}` }
       );
       for (const entry of relatedFinanceEntries) {
-        deleteFinanceEntry(Number(entry.id), { actor });
+        deleteFinanceEntry(Number(entry.id), {
+          actor,
+          reversal: isReversal,
+          reason: isReversal ? "PDV_REVERSAL" : "POS_SALE_DELETE",
+          saleId: Number(saleId),
+          saleCode: beforeState.code
+        });
       }
 
       run("DELETE FROM pos_sales WHERE id = :id", { id: Number(saleId) });
       refreshCashSessionExpectedAmount(beforeState.cash_session_id);
       syncLowStockNotifications();
-      writeAuditLog(actor, "POS_SALE", Number(saleId), "DELETE", beforeState, null, { code: beforeState.code });
+      writeAuditLog(actor, "POS_SALE", Number(saleId), "DELETE", beforeState, null, {
+        code: beforeState.code,
+        reversal: isReversal,
+        reason: isReversal ? "PDV_REVERSAL" : "POS_SALE_DELETE"
+      });
       return { success: true };
     });
   }
@@ -3908,7 +3982,12 @@ export function createAppRepository(options = {}) {
       throw new Error("Nao foi possivel localizar a reposicao de estoque vinculada. A reversao financeira isolada foi bloqueada para evitar divergencia no estoque.");
     }
     if (linkedPosSale?.id) {
-      return deletePosSale(Number(linkedPosSale.id), { actor });
+      return deletePosSale(Number(linkedPosSale.id), {
+        actor,
+        reversal: true,
+        reason: "REVERSAL",
+        financeEntryId
+      });
     }
     if (["ORDER_COMPLETION", "PDV_PAYMENT"].includes(source) || ["Recebimento de OS", "Venda de produto", "Venda de serviço", "Venda de servico", "Venda mista PDV"].includes(String(financeEntry.category || ""))) {
       throw new Error("Essa transacao nao pode ser revertida por esta tela. Reverta a origem operacional correspondente.");
@@ -4384,6 +4463,7 @@ export function createAppRepository(options = {}) {
 
   function deleteFinanceEntry(entryId, context = {}) {
     const actor = context.actor || context._actor;
+    const { actor: _actor, _actor: __actor, ...auditContext } = context || {};
     const beforeState = get("SELECT * FROM finance_entries WHERE id = :id", { id: entryId });
     if (!beforeState) {
       throw new Error("Lancamento financeiro nao encontrado.");
@@ -4395,7 +4475,7 @@ export function createAppRepository(options = {}) {
     run("DELETE FROM store_cash_movements WHERE finance_entry_id = :entryId", { entryId: Number(entryId) });
     affectedAccounts.forEach(recalculateStoreCashAccountBalance);
     run("DELETE FROM finance_entries WHERE id = :id", { id: entryId });
-    writeAuditLog(actor, "FINANCE", entryId, "DELETE", beforeState, null, {});
+    writeAuditLog(actor, "FINANCE", entryId, "DELETE", beforeState, null, auditContext);
     return { success: true };
   }
 
@@ -6151,6 +6231,21 @@ export function createAppRepository(options = {}) {
     const orders = repo.listOrders({ storeId });
     const clients = repo.listClients({});
     const posSales = listPosSales({ storeId });
+    const reversalLogs = all("SELECT * FROM audit_logs WHERE action IN ('REVERT', 'DELETE') ORDER BY created_at DESC, id DESC")
+      .map((log) => ({
+        ...log,
+        before_state_parsed: safeParseJson(log.before_state, {}),
+        context_data_parsed: safeParseJson(log.context_data, {})
+      }))
+      .filter((log) => {
+        if (String(log.action || "").toUpperCase() === "REVERT") {
+          return true;
+        }
+        if (Boolean(log.context_data_parsed?.reversal)) {
+          return true;
+        }
+        return String(log.entity_type || "").toUpperCase() === "POS_SALE";
+      });
 
     const salePaymentsByCode = new Map();
     const saleItemsByCode = new Map();
@@ -6177,7 +6272,8 @@ export function createAppRepository(options = {}) {
       { campo: "Reposicoes", valor: replenishments.length },
       { campo: "Ordens de servico", valor: orders.length },
       { campo: "Clientes", valor: clients.length },
-      { campo: "Vendas PDV", valor: posSales.length }
+      { campo: "Vendas PDV", valor: posSales.length },
+      { campo: "Reversoes registradas", valor: reversalLogs.length }
     ];
 
     const stockUsageCounts = new Map();
@@ -6360,9 +6456,14 @@ export function createAppRepository(options = {}) {
       {
         name: "Vendas PDV",
         rows: [
-          ["id", "codigo", "cliente", "operador", "subtotal", "desconto", "total", "formas_pagamento", "troco", "criado_em"],
+          ["id", "codigo", "cliente", "itens_vendidos", "operador", "subtotal", "desconto", "total", "formas_pagamento", "troco", "criado_em"],
           ...posSales.map((sale) => {
             const payments = salePaymentsByCode.get(sale.code) || [];
+            const saleItems = saleItemsByCode.get(sale.code) || [];
+            const itemSummary = saleItems
+              .map((item) => `${Number(item.quantity || 0) > 1 ? `${Number(item.quantity || 0)}x ` : ""}${item.item_name || ""}`.trim())
+              .filter(Boolean)
+              .join(", ");
             const paymentMethods = [...new Set(payments.map((payment) => payment.payment_method).filter(Boolean))].join(", ");
             const saleTotals = saleTotalsByCode.get(sale.code) || {};
             const totalPaid = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
@@ -6370,6 +6471,7 @@ export function createAppRepository(options = {}) {
               sale.id,
               sale.code || "",
               sale.client_name || "",
+              itemSummary,
               sale.operator_name || store?.short_name || store?.name || "",
               Number(saleTotals.subtotal ?? sale.subtotal_amount ?? 0),
               Number(sale.discount_amount || 0),
@@ -6417,6 +6519,34 @@ export function createAppRepository(options = {}) {
               Number(payment.amount || 0),
               payment.created_at || ""
             ]);
+          })
+        ]
+      },
+      {
+        name: "Historico Reversoes",
+        rows: [
+          ["id", "data", "usuario", "tipo_entidade", "entidade_id", "acao", "codigo_referencia", "motivo", "valor", "itens_vendidos", "contexto"],
+          ...reversalLogs.map((log) => {
+            const beforeState = log.before_state_parsed || {};
+            const contextData = log.context_data_parsed || {};
+            const items = Array.isArray(beforeState.items) ? beforeState.items : [];
+            const itemSummary = items
+              .map((item) => `${Number(item.quantity || 0) > 1 ? `${Number(item.quantity || 0)}x ` : ""}${item.item_name || item.itemName || ""}`.trim())
+              .filter(Boolean)
+              .join(", ");
+            return [
+              log.id,
+              log.created_at || "",
+              log.actor_name || "",
+              log.entity_type || "",
+              log.entity_id || "",
+              log.action || "",
+              beforeState.code || beforeState.description || contextData.code || contextData.saleCode || "",
+              contextData.reason || (String(log.action || "").toUpperCase() === "REVERT" ? "REVERT" : "DELETE"),
+              Number(beforeState.total_amount ?? beforeState.amount ?? 0),
+              itemSummary,
+              log.context_data || ""
+            ];
           })
         ]
       },

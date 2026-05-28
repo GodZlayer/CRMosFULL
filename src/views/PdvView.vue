@@ -350,6 +350,18 @@
                   <div>
                     {{ sale.client_name || "Cliente sem cadastro" }}
                   </div>
+                  <div v-if="sale.items?.length" class="d-flex flex-wrap gap-2 mt-1">
+                    <span
+                      v-for="item in sale.items"
+                      :key="item.id"
+                      class="be-badge text-bg-light border">
+                      <i :class="saleItemIcon(item)"></i>
+                      {{ saleItemLabel(item) }}
+                    </span>
+                  </div>
+                  <div v-else class="small text-body-secondary">
+                    Itens nao carregados para esta venda.
+                  </div>
                 </div>
 
                 <div class="d-flex align-items-center gap-3 flex-wrap">
@@ -638,6 +650,18 @@ function formatSaleTime(value: string) {
     return `${match[1]}:${match[2]}`;
   }
   return String(value || "").slice(11, 16) || "sem hora";
+}
+
+function saleItemIcon(item: { item_type?: string }) {
+  return String(item.item_type || "").toUpperCase() === "SERVICE"
+    ? "fa-solid fa-screwdriver-wrench"
+    : "fa-solid fa-box";
+}
+
+function saleItemLabel(item: { item_name?: string; quantity?: number }) {
+  const quantity = Number(item.quantity || 0);
+  const quantityLabel = quantity > 1 ? `${quantity}x ` : "";
+  return `${quantityLabel}${item.item_name || "Item vendido"}`;
 }
 
 function printSale(saleId: number) {

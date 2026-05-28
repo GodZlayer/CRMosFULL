@@ -355,6 +355,7 @@ export interface FinanceEntry {
   cash_account_id?: number | null;
   cash_account_name?: string;
   cash_account_code?: string;
+  item_summary?: string;
   finance_entry_id?: number | null;
   replenishment_id?: number | null;
   order_code?: string;
@@ -401,6 +402,7 @@ export interface StoreCashMovement {
   cash_account_name?: string;
   cash_account_code?: string;
   sale_code?: string;
+  item_summary?: string;
   finance_category?: string;
   finance_payment_method?: string;
   replenishment_id?: number | null;
@@ -826,6 +828,7 @@ export interface PosSale {
   created_at: string;
   updated_at: string;
   operator_name?: string;
+  item_summary?: string;
   items: PosSaleItem[];
   payments: PosPayment[];
 }
@@ -878,6 +881,7 @@ export interface ReportsPayload {
   orders: OrderSummary[];
   finance: FinanceEntry[];
   purchases?: FinanceEntry[];
+  pdvSales?: PosSale[];
   inventory: CatalogItem[];
   notifications?: NotificationItem[];
   performance?: PerformanceMetric[];

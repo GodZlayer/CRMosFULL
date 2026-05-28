@@ -970,6 +970,56 @@ test("financeiro reverte venda do PDV pelo lancamento e remove estoque, caixa e 
   repository.close();
 });
 
+test("pdv nao reutiliza codigo diario depois de reversao", () => {
+  const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
+  const actor = getActor(repository);
+  const store = repository.getCurrentStore();
+  const product = repository.saveCatalogItem({
+    name: "Produto sequencia PDV",
+    category: "Acessórios",
+    itemCondition: "NOVA",
+    stockQuantity: 5,
+    minStock: 0,
+    costAmount: 10,
+    priceAmount: 25,
+    _actor: actor
+  });
+
+  const session = repository.openCashSession({
+    openingAmount: 0,
+    paymentMethod: "CAIXINHA_LOJA",
+    notes: "Teste sequencia PDV",
+    _actor: actor
+  });
+
+  const firstSale = repository.createPosSale({
+    cashSessionId: session.id,
+    items: [{ itemType: "PRODUCT", catalogItemId: product.id, quantity: 1 }],
+    paymentMethod: "CAIXINHA_LOJA",
+    _actor: actor
+  });
+  const secondSale = repository.createPosSale({
+    cashSessionId: session.id,
+    items: [{ itemType: "PRODUCT", catalogItemId: product.id, quantity: 1 }],
+    paymentMethod: "CAIXINHA_LOJA",
+    _actor: actor
+  });
+
+  const financeEntry = repository.listFinanceEntries({ storeId: store.id }).find((entry) => String(entry.description) === `Venda ${firstSale.code}`);
+  repository.revertFinancialTransaction({ financeEntryId: financeEntry.id }, { actor });
+
+  const thirdSale = repository.createPosSale({
+    cashSessionId: session.id,
+    items: [{ itemType: "PRODUCT", catalogItemId: product.id, quantity: 1 }],
+    paymentMethod: "CAIXINHA_LOJA",
+    _actor: actor
+  });
+
+  assert.notEqual(thirdSale.code, secondSale.code);
+  assert.equal(thirdSale.code.endsWith("-0003"), true);
+  repository.close();
+});
+
 test("transferencia interna move saldo entre contas sem virar receita ou despesa", () => {
   const repository = createAppRepository({ dbPath: ":memory:", seedDemo: true });
   const actor = getActor(repository);

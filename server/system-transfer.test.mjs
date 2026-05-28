@@ -100,6 +100,55 @@ test("importSqliteBackupOds updates existing finance entries when merging backup
   }
 });
 
+test("exportSqliteBackupOds includes pdv details and reversal history sheets", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "crm-backup-detail-"));
+  const repo = createAppRepository({
+    dbPath: ":memory:",
+    storageRoot: tempDir,
+    uploadsRoot: tempDir,
+    seedDemo: true
+  });
+
+  try {
+    const actor = { id: 1, name: "QA" };
+    const store = repo.getCurrentStore();
+    const product = repo.saveCatalogItem({
+      name: "Produto backup PDV",
+      category: "Acessórios",
+      itemCondition: "NOVA",
+      stockQuantity: 2,
+      minStock: 0,
+      costAmount: 10,
+      priceAmount: 35,
+      _actor: actor
+    });
+    const session = repo.openCashSession({
+      openingAmount: 0,
+      paymentMethod: "CAIXINHA_LOJA",
+      _actor: actor
+    });
+    const sale = repo.createPosSale({
+      cashSessionId: session.id,
+      items: [{ itemType: "PRODUCT", catalogItemId: product.id, quantity: 1 }],
+      paymentMethod: "CAIXINHA_LOJA",
+      _actor: actor
+    });
+    const financeEntry = repo.listFinanceEntries({ storeId: store.id }).find((entry) => String(entry.description) === `Venda ${sale.code}`);
+    repo.revertFinancialTransaction({ financeEntryId: financeEntry.id }, { actor });
+
+    const workbook = parseOdsBuffer(exportSqliteBackupOds(repo.db, { actorName: "QA" }).buffer);
+    const pdvDetail = workbook.sheets.find((sheet) => sheet.name === "PDV detalhado");
+    const reversals = workbook.sheets.find((sheet) => sheet.name === "Historico Reversoes");
+
+    assert.ok(pdvDetail);
+    assert.ok(reversals);
+    assert.ok(reversals.rows.some((row) => row.includes(sale.code)));
+  } finally {
+    repo.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("exportOperationalOds generates the legacy operational workbook", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "crm-ods-export-"));
   const repo = createAppRepository({
@@ -134,6 +183,7 @@ test("exportOperationalOds generates the legacy operational workbook", () => {
       "Vendas PDV",
       "Itens PDV",
       "Pagamentos PDV",
+      "Historico Reversoes",
       "Importacao Legada"
     ]);
 
@@ -188,6 +238,7 @@ test("importOperationalOds accepts the legacy workbook and restores operational 
       "Vendas PDV",
       "Itens PDV",
       "Pagamentos PDV",
+      "Historico Reversoes",
       "Importacao Legada"
     ]);
   } finally {

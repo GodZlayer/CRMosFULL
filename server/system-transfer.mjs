@@ -125,6 +125,100 @@ function toBackupSheetRows(columns = [], rows = []) {
   return [header, ...body];
 }
 
+function parseBackupJson(value, fallback = {}) {
+  try {
+    return JSON.parse(String(value || ""));
+  } catch {
+    return fallback;
+  }
+}
+
+function buildPosSaleDetailRows(db) {
+  const rows = sqliteAll(
+    db,
+    `
+      SELECT
+        ps.id,
+        ps.code,
+        ps.client_name,
+        ps.subtotal_amount,
+        ps.discount_amount,
+        ps.total_amount,
+        ps.created_at,
+        GROUP_CONCAT(
+          CASE
+            WHEN psi.quantity > 1 THEN CAST(psi.quantity AS TEXT) || 'x ' || psi.item_name
+            ELSE psi.item_name
+          END,
+          ', '
+        ) AS item_summary
+      FROM pos_sales ps
+      LEFT JOIN pos_sale_items psi ON psi.sale_id = ps.id
+      GROUP BY ps.id
+      ORDER BY ps.created_at DESC, ps.id DESC
+    `
+  );
+
+  return [
+    ["id", "codigo", "cliente", "itens_vendidos", "subtotal", "desconto", "total", "criado_em"],
+    ...rows.map((row) => [
+      row.id,
+      row.code || "",
+      row.client_name || "",
+      row.item_summary || "",
+      Number(row.subtotal_amount || 0),
+      Number(row.discount_amount || 0),
+      Number(row.total_amount || 0),
+      row.created_at || ""
+    ])
+  ];
+}
+
+function buildReversalHistoryRows(db) {
+  const rows = sqliteAll(
+    db,
+    "SELECT * FROM audit_logs WHERE action IN ('REVERT', 'DELETE') ORDER BY created_at DESC, id DESC"
+  )
+    .map((row) => ({
+      ...row,
+      beforeState: parseBackupJson(row.before_state, {}),
+      contextData: parseBackupJson(row.context_data, {})
+    }))
+    .filter((row) => {
+      if (String(row.action || "").toUpperCase() === "REVERT") {
+        return true;
+      }
+      if (Boolean(row.contextData?.reversal)) {
+        return true;
+      }
+      return String(row.entity_type || "").toUpperCase() === "POS_SALE";
+    });
+
+  return [
+    ["id", "data", "usuario", "tipo_entidade", "entidade_id", "acao", "codigo_referencia", "motivo", "valor", "itens_vendidos", "contexto"],
+    ...rows.map((row) => {
+      const items = Array.isArray(row.beforeState?.items) ? row.beforeState.items : [];
+      const itemSummary = items
+        .map((item) => `${Number(item.quantity || 0) > 1 ? `${Number(item.quantity || 0)}x ` : ""}${item.item_name || item.itemName || ""}`.trim())
+        .filter(Boolean)
+        .join(", ");
+      return [
+        row.id,
+        row.created_at || "",
+        row.actor_name || "",
+        row.entity_type || "",
+        row.entity_id || "",
+        row.action || "",
+        row.beforeState?.code || row.beforeState?.description || row.contextData?.code || row.contextData?.saleCode || "",
+        row.contextData?.reason || (String(row.action || "").toUpperCase() === "REVERT" ? "REVERT" : "DELETE"),
+        Number(row.beforeState?.total_amount ?? row.beforeState?.amount ?? 0),
+        itemSummary,
+        row.context_data || ""
+      ];
+    })
+  ];
+}
+
 function buildSqliteInsertSql(tableName, columns = [], options = {}) {
   const quotedColumns = columns.map((column) => escapeIdentifier(column));
   const placeholders = columns.map((column) => `:${column}`);
@@ -177,6 +271,15 @@ export function exportSqliteBackupOds(db, options = {}) {
     });
     summaryRows.push({ campo: tableName, valor: rows.length });
   }
+
+  sheets.push({
+    name: "PDV detalhado",
+    rows: buildPosSaleDetailRows(db)
+  });
+  sheets.push({
+    name: "Historico Reversoes",
+    rows: buildReversalHistoryRows(db)
+  });
 
   sheets.unshift({
     name: "Resumo",

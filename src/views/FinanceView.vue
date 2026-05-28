@@ -208,6 +208,7 @@
               <tr>
                 <th>Data</th>
                 <th>Descrição</th>
+                <th>Itens vendidos</th>
                 <th>Conta</th>
                 <th>Tipo</th>
                 <th>Valor</th>
@@ -218,6 +219,7 @@
               <tr v-for="entry in cycleMovementRows.slice(0, 40)" :key="entry.id">
                 <td>{{ dateLabel(entry.movement_date) }}</td>
                 <td>{{ entry.description }}</td>
+                <td>{{ entry.item_summary || "-" }}</td>
                 <td>{{ movementAccountLabel(entry) }}</td>
                 <td>
                   <span :class="`badge text-bg-${entryTone(entry)}`">
@@ -283,6 +285,7 @@
               <tr>
                 <th>Data</th>
                 <th>Descrição</th>
+                <th>Itens vendidos</th>
                 <th>Conta</th>
                 <th>Tipo</th>
                 <th>Valor</th>
@@ -293,6 +296,7 @@
               <tr v-for="entry in monthMovementRows.slice(0, 60)" :key="entry.id">
                 <td>{{ dateLabel(entry.movement_date) }}</td>
                 <td>{{ entry.description }}</td>
+                <td>{{ entry.item_summary || "-" }}</td>
                 <td>{{ movementAccountLabel(entry) }}</td>
                 <td>
                   <span :class="`badge text-bg-${entryTone(entry)}`">

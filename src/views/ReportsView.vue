@@ -223,6 +223,7 @@
       <tr>
        <th>Venda</th>
        <th>Cliente</th>
+       <th>Itens vendidos</th>
        <th>Operador</th>
        <th>Subtotal</th>
        <th>Desconto</th>
@@ -233,6 +234,7 @@
       <tr v-for="sale in payload?.pdvSales || []" :key="sale.id">
        <td>{{ sale.code }}</td>
        <td>{{ sale.client_name }}</td>
+       <td>{{ sale.item_summary || "-" }}</td>
        <td>{{ sale.operator_name }}</td>
        <td>{{ currency(sale.subtotal_amount) }}</td>
        <td>{{ currency(sale.discount_amount) }}</td>
@@ -241,7 +243,7 @@
      </tbody>
      <tfoot>
       <tr class="fw-bold">
-       <td colspan="5">Total da impressão</td>
+       <td colspan="6">Total da impressão</td>
        <td>{{ currency(totalRowsAmount(payload?.pdvSales || [], "total_amount")) }}</td>
       </tr>
      </tfoot>
@@ -259,6 +261,7 @@
        <th>Tipo</th>
        <th>Categoria</th>
        <th>Descricao</th>
+       <th>Itens vendidos</th>
        <th>Pagamento</th>
        <th>Valor</th>
       </tr>
@@ -278,13 +281,14 @@
        <td>{{ entry.entry_type }}</td>
        <td>{{ entry.category }}</td>
        <td>{{ entry.description }}</td>
+       <td>{{ entry.item_summary || "-" }}</td>
        <td>{{ entry.cash_account_name || entry.cash_account_code || entry.payment_method || "-" }}</td>
        <td>{{ currency(entry.amount) }}</td>
       </tr>
      </tbody>
      <tfoot>
       <tr class="fw-bold">
-       <td colspan="5">Total da impressão</td>
+       <td colspan="6">Total da impressão</td>
        <td>{{ currency(totalRowsAmount(payload?.finance || [], "amount")) }}</td>
       </tr>
      </tfoot>
@@ -429,6 +433,7 @@ const orderColumns = [
 const pdvColumns = [
  { title: "Codigo", field: "code", minWidth: 150 },
  { title: "Cliente", field: "client_name", minWidth: 180 },
+ { title: "Itens vendidos", field: "item_summary", minWidth: 240 },
  { title: "Operador", field: "operator_name", minWidth: 150 },
  { title: "Subtotal", field: "subtotal_amount", formatter: (cell: any) => currency(cell.getValue()) },
  { title: "Desconto", field: "discount_amount", formatter: (cell: any) => currency(cell.getValue()) },
@@ -521,6 +526,7 @@ const financeColumns = [
  { title: "Tipo", field: "entry_type" },
  { title: "Categoria", field: "category" },
  { title: "Descricao", field: "description" },
+ { title: "Itens vendidos", field: "item_summary", minWidth: 240 },
  { title: "Conta", field: "cash_account_name", formatter: (cell: any) => financeAccountLabel(cell.getRow().getData()) },
  { title: "Valor", field: "amount", formatter: (cell: any) => currency(cell.getValue()) },
  { title: "ID", field: "id", visible: false },
