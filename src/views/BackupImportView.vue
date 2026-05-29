@@ -75,6 +75,10 @@
               <i class="fa-solid fa-file-arrow-down me-2"></i>
               {{ busy.odsExport ? "Gerando backup..." : "Exportar backup ODS" }}
             </button>
+            <button class="btn btn-success rounded-pill" :disabled="busy.zipExport" @click="downloadFullBackupZip">
+              <i class="fa-solid fa-file-zipper me-2"></i>
+              {{ busy.zipExport ? "Gerando ZIP..." : "Exportar backup ZIP completo" }}
+            </button>
           </div>
         </section>
       </div>
@@ -91,8 +95,8 @@
 
           <div class="d-grid gap-3">
             <div>
-              <label class="form-label fw-semibold">Arquivo ODS</label>
-              <input class="form-control rounded-4" type="file" accept=".ods" @change="onBackupFileChange" />
+              <label class="form-label fw-semibold">Arquivo ODS ou ZIP</label>
+              <input class="form-control rounded-4" type="file" accept=".ods,.zip,application/zip" @change="onBackupFileChange" />
               <div class="form-text">
                 {{ backupFileName || "Nenhum arquivo selecionado." }}
               </div>
@@ -105,7 +109,7 @@
           <div class="d-flex flex-wrap gap-2">
             <button class="btn btn-primary rounded-pill" :disabled="busy.odsImport || !backupFile" @click="runBackupImport">
               <i class="fa-solid fa-database me-2"></i>
-              {{ busy.odsImport ? "Importando backup..." : "Importar e substituir" }}
+              {{ busy.odsImport ? "Importando backup..." : "Importar ODS/ZIP e substituir" }}
             </button>
             <button class="btn btn-outline-secondary rounded-pill" :disabled="busy.odsImport && !backupFile" @click="clearBackupFile">
               Limpar arquivo
@@ -644,6 +648,7 @@ const busy = reactive({
   mysqlImport: false,
   odsImport: false,
   odsExport: false,
+  zipExport: false,
   adminLoad: false,
   userSave: false,
   cashSave: false,
@@ -1044,6 +1049,26 @@ async function downloadOperationalOds() {
   }
 }
 
+async function downloadFullBackupZip() {
+  busy.zipExport = true;
+  try {
+    const { blob, fileName } = await api.downloadFullBackupZip({});
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    window.URL.revokeObjectURL(url);
+    lastAction.value = "Backup ZIP completo gerado";
+    lastResult.value = { fileName, exportedAt: new Date().toISOString() };
+    await notifySuccess("Backup ZIP exportado", fileName);
+  } catch (error) {
+    await notifyError(error);
+  } finally {
+    busy.zipExport = false;
+  }
+}
+
 function clearBackupFile() {
   backupFile.value = null;
 }
@@ -1074,12 +1099,20 @@ async function runBackupImport() {
   busy.odsImport = true;
   try {
     const contentBase64 = await fileToBase64(backupFile.value);
-    const response = await api.importOperationalOds({
-      fileName: backupFile.value.name,
-      contentBase64,
-      clearExisting: true
-    });
-    lastAction.value = "Backup ODS importado";
+    const isZip = backupFile.value.name.toLowerCase().endsWith(".zip");
+    const response = isZip
+      ? await api.importFullBackupZip({
+        fileName: backupFile.value.name,
+        contentBase64,
+        clearExisting: true,
+        restoreUploads: true
+      })
+      : await api.importOperationalOds({
+        fileName: backupFile.value.name,
+        contentBase64,
+        clearExisting: true
+      });
+    lastAction.value = isZip ? "Backup ZIP completo importado" : "Backup ODS importado";
     lastResult.value = response.data;
     await session.refreshMeta();
     await notifySuccess("Backup importado", `Arquivo ${backupFile.value.name} aplicado com sucesso.`);

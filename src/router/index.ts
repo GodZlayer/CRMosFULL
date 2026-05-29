@@ -12,6 +12,7 @@ import FinanceView from "../views/FinanceView.vue";
 import PurchasesView from "../views/PurchasesView.vue";
 import ReportsView from "../views/ReportsView.vue";
 import PdvView from "../views/PdvView.vue";
+import WebstoreSettingsView from "../views/WebstoreSettingsView.vue";
 import BackupImportView from "../views/BackupImportView.vue";
 import OrderPrintView from "../views/OrderPrintView.vue";
 import PdvPrintView from "../views/PdvPrintView.vue";
@@ -36,6 +37,7 @@ const router = createRouter({
     { path: "/backup-importacao", name: "backup-importacao", component: BackupImportView },
     { path: "/relatorios", name: "relatorios", component: ReportsView, meta: { navGroup: "finance", navSection: "relatorios" } },
     { path: "/pdv", name: "pdv", component: PdvView, meta: { navGroup: "operations", navSection: "pdv" } },
+    { path: "/webstore", name: "webstore", component: WebstoreSettingsView, meta: { navGroup: "webstore", navSection: "webstore" } },
     { path: "/imprimir/os/:id", name: "imprimir-os", component: OrderPrintView },
     { path: "/imprimir/pdv/:id", name: "imprimir-pdv", component: PdvPrintView }
   ]

@@ -20,6 +20,7 @@
   FinanceEntry,
   FinanceCategory,
   FiscalDocument,
+  GmailApiSettings,
   LegacyImportRow,
   LegacyImportSummary,
   MediaUploadPayload,
@@ -39,7 +40,9 @@
   StoreCashTransferPayload,
   StoreCashTransferResult,
   StoreContext,
-  User
+  User,
+  WebstoreSettings,
+  WebstoreStatus
 } from "./types";
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -176,6 +179,32 @@ export const api = {
       method: "DELETE"
     });
   },
+  webstoreSettings() {
+    return request<{ data: WebstoreSettings; status: WebstoreStatus }>("/api/admin/webstore-settings");
+  },
+  saveWebstoreSettings(payload: Partial<WebstoreSettings>) {
+    return request<{ data: WebstoreSettings; status: WebstoreStatus }>("/api/admin/webstore-settings", {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    });
+  },
+  gmailStatus() {
+    return request<{ data: GmailApiSettings }>("/api/admin/gmail/status");
+  },
+  saveGmailSettings(payload: Partial<GmailApiSettings> & { clientSecret?: string }) {
+    return request<{ data: GmailApiSettings }>("/api/admin/gmail/settings", {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    });
+  },
+  gmailConnect() {
+    return request<{ data: { url: string } }>("/api/admin/gmail/connect");
+  },
+  gmailDisconnect() {
+    return request<{ data: GmailApiSettings & { revokeError?: string } }>("/api/admin/gmail/disconnect", {
+      method: "POST"
+    });
+  },
   auditLogs(filters: Filters = {}) {
     return request<{ data: any[] }>(`/api/audit-logs${toQuery(filters)}`);
   },
@@ -227,7 +256,7 @@ export const api = {
   catalogItem(id: number) {
     return request<{ data: CatalogItemDetail }>(`/api/catalog/${id}`);
   },
-  saveCatalog(payload: Partial<CatalogItem>) {
+  saveCatalog(payload: Partial<CatalogItem> & { photoUpload?: MediaUploadPayload | null; photoPreview?: string }) {
     const id = payload.id ? Number(payload.id) : undefined;
     const method = id ? "PUT" : "POST";
     const url = id ? `/api/catalog/${id}` : "/api/catalog";
@@ -249,6 +278,12 @@ export const api = {
     return request<CatalogDeleteResult>("/api/catalog/bulk-delete", {
       method: "POST",
       body: JSON.stringify({ ids })
+    });
+  },
+  updateCatalogWebstoreVisibility(ids: number[], visible: boolean) {
+    return request<{ success: boolean; updatedCount: number; visible: boolean }>("/api/catalog/bulk-webstore-visibility", {
+      method: "POST",
+      body: JSON.stringify({ ids, visible })
     });
   },
   saveCatalogBatch(items: Partial<CatalogItem>[]) {
@@ -292,7 +327,7 @@ export const api = {
   service(id: number) {
     return request<{ data: ServiceCatalogItem }>(`/api/services/${id}`);
   },
-  saveService(payload: Partial<ServiceCatalogItem>) {
+  saveService(payload: Partial<ServiceCatalogItem> & { photoUpload?: MediaUploadPayload | null; photoPreview?: string }) {
     const id = payload.id ? Number(payload.id) : undefined;
     const method = id ? "PUT" : "POST";
     const url = id ? `/api/services/${id}` : "/api/services";
@@ -622,8 +657,37 @@ export const api = {
       fileName: response.headers.get("Content-Disposition")?.match(/filename=\"?([^"]+)\"?/)?.[1] || "backup-crm.ods"
     };
   },
+  async downloadFullBackupZip(payload: Record<string, unknown> = {}) {
+    const response = await fetch("/api/system-transfer/backup/full-zip", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      try {
+        const parsed = JSON.parse(text);
+        throw new Error(String(parsed.message || "Falha ao gerar backup ZIP."));
+      } catch {
+        throw new Error(text || "Falha ao gerar backup ZIP.");
+      }
+    }
+    return {
+      blob: await response.blob(),
+      fileName: response.headers.get("Content-Disposition")?.match(/filename=\"?([^"]+)\"?/)?.[1] || "backup-crm-completo.zip"
+    };
+  },
   importOperationalOds(payload: Record<string, unknown>) {
     return request<{ data: Record<string, unknown> }>("/api/system-transfer/import/ods", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  },
+  importFullBackupZip(payload: Record<string, unknown>) {
+    return request<{ data: Record<string, unknown> }>("/api/system-transfer/import/full-zip", {
       method: "POST",
       body: JSON.stringify(payload)
     });

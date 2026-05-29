@@ -7,13 +7,15 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const children = [];
 const defaultApiPort = Number(process.env.CRM_API_PORT || process.env.PORT || 3001);
 const defaultWebPort = Number(process.env.CRM_WEB_PORT || 5173);
+const defaultWebstorePort = Number(process.env.CRM_WEBSTORE_PORT || 5174);
 const sessionFile = join(process.cwd(), ".dev-session.json");
 const currentSession = {
   ownerPid: process.pid,
   childPids: [],
   startedAt: new Date().toISOString(),
   apiPort: null,
-  webPort: null
+  webPort: null,
+  webstorePort: null
 };
 
 function persistSession() {
@@ -223,6 +225,16 @@ async function resolveWebPort() {
   return fallbackPort;
 }
 
+async function resolveWebstorePort() {
+  if (await isPortAvailable(defaultWebstorePort)) {
+    return defaultWebstorePort;
+  }
+
+  const fallbackPort = await findAvailablePort(defaultWebstorePort + 1);
+  console.log(`Porta ${defaultWebstorePort} ocupada. Subindo a webstore em http://127.0.0.1:${fallbackPort}.`);
+  return fallbackPort;
+}
+
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
@@ -232,18 +244,23 @@ async function main() {
 
   const { port } = await resolveApiPort();
   const webPort = await resolveWebPort();
+  const webstorePort = await resolveWebstorePort();
   currentSession.apiPort = port;
   currentSession.webPort = webPort;
+  currentSession.webstorePort = webstorePort;
   persistSession();
-  console.log(`Iniciando nova sessao local com API em http://127.0.0.1:${port} e web em http://127.0.0.1:${webPort}.`);
+  console.log(`Iniciando nova sessao local com API em http://127.0.0.1:${port}, CRM em http://127.0.0.1:${webPort} e webstore em http://127.0.0.1:${webstorePort}.`);
   console.log(`Acesse o CRM em http://127.0.0.1:${webPort} .`);
+  console.log(`Acesse a webstore em http://127.0.0.1:${webstorePort} .`);
   const sharedEnv = {
     CRM_API_PORT: String(port),
-    CRM_WEB_PORT: String(webPort)
+    CRM_WEB_PORT: String(webPort),
+    CRM_WEBSTORE_PORT: String(webstorePort)
   };
 
   run("dev:api", { ...sharedEnv, PORT: String(port) });
   run("dev:web", sharedEnv);
+  run("dev:webstore", sharedEnv);
 }
 
 main().catch((error) => {

@@ -124,6 +124,8 @@
     v-for="item in currentGroupTabs"
     :key="item.to"
     :to="item.to"
+    active-class=""
+    exact-active-class=""
     class="nav-link rounded-pill px-3 py-2"
     :class="{ 'router-link-active': isTabActive(item) }">
     {{ item.label }}
@@ -316,19 +318,28 @@ const groupedSections = {
   { to: "/inventario", label: "Inventário", section: "inventario" }
  ]
  },
- operations: {
+operations: {
  title: "Operação",
  subtitle: "PDV e ordens de serviço concentrados na mesma área operacional.",
  tabs: [
   { to: "/pdv", label: "PDV", section: "pdv" },
-  { to: "/os", label: "Ordens de serviço", section: "os" }
+  { to: "/os", label: "OS", section: "os" }
+ ]
+ },
+ webstore: {
+ title: "Webstore",
+ subtitle: "Loja online, página pública e integração Gmail.",
+ tabs: [
+  { to: "/webstore?tab=home", label: "Home", section: "webstore-home" },
+  { to: "/webstore?tab=sobre", label: "Sobre", section: "webstore-about" }
  ]
  }
 } as const;
 
 const navigation = [
  { to: "/financeiro", label: "Financeiro", icon: "fa-solid fa-wallet", group: "finance" },
- { to: "/pdv", label: "PDV e OS", icon: "fa-solid fa-cash-register", group: "operations" },
+ { to: "/pdv", label: "PDV e OS", icon: "fa-solid fa-cash-register", group: "operations", sections: ["pdv", "os"] },
+ { to: "/webstore", label: "Webstore", icon: "fa-solid fa-store", group: "webstore", sections: ["webstore"] },
  { to: "/calendario", label: "Calendário e Tarefas", icon: "fa-solid fa-calendar-days", group: "agenda" },
  { to: "/catalogo", label: "Inventário", icon: "fa-solid fa-boxes-stacked", group: "inventory" },
  { to: "/clientes", label: "Clientes", icon: "fa-solid fa-users" },
@@ -347,7 +358,10 @@ const themeOptions: Array<{ value: ThemeMode; label: string; icon: string }> = [
  { value: "dark", label: "Escuro", icon: "fa-regular fa-moon" }
 ];
 
-function isNavActive(item: { to: string; group?: string }) {
+function isNavActive(item: { to: string; group?: string; sections?: string[] }) {
+ if (item.sections?.length) {
+ return currentGroupKey.value === item.group && item.sections.includes(String(route.meta.navSection || ""));
+ }
  if (item.group) {
  return currentGroupKey.value === item.group;
  }
@@ -355,6 +369,10 @@ function isNavActive(item: { to: string; group?: string }) {
 }
 
 function isTabActive(item: { section: string }) {
+ if (currentGroupKey.value === "webstore") {
+  const tab = String(route.query.tab || "home");
+  return item.section === (tab === "sobre" ? "webstore-about" : "webstore-home");
+ }
  return String(route.meta.navSection || "") === item.section;
 }
 

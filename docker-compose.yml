@@ -11,6 +11,18 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  webstore:
+    build:
+      context: .
+      dockerfile: Dockerfile.webstore
+    image: brasil-express-crm-webstore:local
+    ports:
+      - "3002:80"
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
   server:
     build:
       context: .
@@ -26,6 +38,14 @@ services:
       POSTGRES_DB: crmosfull
       POSTGRES_USER: crm
       POSTGRES_PASSWORD: crm
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
+      GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
+      GMAIL_REFRESH_TOKEN: ${GMAIL_REFRESH_TOKEN:-}
+      GMAIL_ACCESS_TOKEN: ${GMAIL_ACCESS_TOKEN:-}
+      GMAIL_FROM: ${GMAIL_FROM:-}
+      BRASILEXPRESS_CONTACT_EMAIL: ${BRASILEXPRESS_CONTACT_EMAIL:-}
     volumes:
       - crm-storage:/app/server/storage
     depends_on:

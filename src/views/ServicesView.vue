@@ -43,10 +43,13 @@
  <div v-if="selectedService" class="d-grid gap-4">
  <div class="hero-banner">
  <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+ <div class="d-flex align-items-start gap-3 flex-wrap">
+ <img v-if="selectedService.photo_url" :src="selectedService.photo_url" :alt="selectedService.name" class="service-detail-image" />
  <div>
  <div class="small opacity-75 mb-2">Serviço cadastrado</div>
  <h3 class="h2 fw-bold mb-1">{{ selectedService.name }}</h3>
  <div class="text-white-50">{{ currency(selectedService.price_amount) }} | {{ durationLabel(selectedService.estimated_minutes) }}</div>
+ </div>
  </div>
  <div class="table-actions">
  <button class="btn btn-light rounded-pill" @click="openEdit(selectedService)">
@@ -88,6 +91,16 @@
 
  <ModalDialog v-model="showForm" :title="form.id ? 'Editar serviço' : 'Novo serviço'" eyebrow="Cadastro de serviços" size="lg">
  <form class="row g-3" @submit.prevent="saveService">
+ <div class="col-12">
+ <MediaCaptureField
+ v-model="form.photoUpload"
+ :preview="form.photoPreview"
+ label="Imagem do serviço"
+ helper="Adicione uma imagem opcional para exibir o serviço na base e na webstore."
+ accept="image/*"
+ @preview-change="form.photoPreview = $event"
+ />
+ </div>
  <div class="col-12">
  <label class="form-label fw-semibold">Nome</label>
  <input v-model="form.name" class="form-control rounded-4" required />
@@ -157,12 +170,13 @@ import { computed, onMounted, reactive, ref } from "vue";
 import AppShell from "../components/AppShell.vue";
 import DataTable from "../components/DataTable.vue";
 import MetricCard from "../components/MetricCard.vue";
+import MediaCaptureField from "../components/MediaCaptureField.vue";
 import ModalDialog from "../components/ModalDialog.vue";
 import SelectionActionBar from "../components/SelectionActionBar.vue";
 import { api } from "../services/api";
 import { currency } from "../services/format";
 import { notifyError, notifySuccess } from "../services/ui";
-import type { ServiceCatalogItem } from "../services/types";
+import type { MediaUploadPayload, ServiceCatalogItem } from "../services/types";
 
 const servicesTable = ref<any>(null);
 const services = ref<ServiceCatalogItem[]>([]);
@@ -182,7 +196,9 @@ const form = reactive({
  available_in_order: true,
  available_in_pdv: false,
  allow_custom_price: false,
- active: true
+ active: true,
+ photoUpload: null as MediaUploadPayload | null,
+ photoPreview: ""
 });
 
 const DAY_MINUTES = 8 * 60;
@@ -194,6 +210,7 @@ const averageDaysLabel = computed(() => averageDays.value ? `${averageDays.value
 
 const columns = [
  { title: "ID", field: "id", width: 90, hozAlign: "center" },
+ { title: "Imagem", field: "photo_url", width: 96, headerSort: false, formatter: (cell: any) => imageFormatter(cell.getValue(), cell.getRow().getData().name) },
  { title: "Serviço", field: "name", minWidth: 220, cssClass: "cell-wrap", variableHeight: true },
  { title: "Descrição", field: "description", minWidth: 260, cssClass: "cell-wrap", variableHeight: true },
  { title: "Preço base", field: "price_amount", minWidth: 130, formatter: (cell: any) => currency(cell.getValue()) },
@@ -249,6 +266,15 @@ function badgeFormatter(label: string, tone: string) {
  return `<span class="badge text-bg-${tone}">${label}</span>`;
 }
 
+function imageFormatter(value: string, label: string) {
+ const src = String(value || "");
+ if (!src) {
+ return '<span class="text-secondary small">Sem imagem</span>';
+ }
+ const alt = String(label || "Serviço").replace(/"/g, "&quot;");
+ return `<img src="${src}" alt="${alt}" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid rgba(15,23,42,.12);" />`;
+}
+
 function minutesToDays(minutes: number) {
  const safe = Math.max(0, Number(minutes || 0));
  return safe ? Math.ceil(safe / DAY_MINUTES) : 0;
@@ -276,7 +302,9 @@ function resetForm() {
  available_in_order: true,
  available_in_pdv: false,
  allow_custom_price: false,
- active: true
+ active: true,
+ photoUpload: null,
+ photoPreview: ""
  });
 }
 
@@ -330,7 +358,9 @@ function openEdit(row: Partial<ServiceCatalogItem>) {
  available_in_order: Boolean(Number(row.available_in_order ?? 1)),
  available_in_pdv: Boolean(Number(row.available_in_pdv ?? 0)),
  allow_custom_price: Boolean(Number(row.allow_custom_price ?? 0)),
- active: Boolean(Number(row.active ?? 1))
+ active: Boolean(Number(row.active ?? 1)),
+ photoUpload: null,
+ photoPreview: row.photo_url || ""
  });
  showForm.value = true;
 }
@@ -351,7 +381,9 @@ async function saveService() {
  available_in_order: form.available_in_order ? 1 : 0,
  available_in_pdv: form.available_in_pdv ? 1 : 0,
  allow_custom_price: form.allow_custom_price ? 1 : 0,
- active: form.active ? 1 : 0
+ active: form.active ? 1 : 0,
+ photoUpload: form.photoUpload,
+ photoPreview: form.photoPreview
  });
  showForm.value = false;
  selectedService.value = response.data;
@@ -404,3 +436,14 @@ async function removeSelected() {
 
 onMounted(loadServices);
 </script>
+
+<style scoped>
+.service-detail-image {
+ width: 96px;
+ height: 96px;
+ object-fit: cover;
+ border-radius: 8px;
+ border: 1px solid rgba(255, 255, 255, 0.32);
+ background: rgba(255, 255, 255, 0.12);
+}
+</style>

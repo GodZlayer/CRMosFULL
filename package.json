@@ -6,8 +6,10 @@
     "scripts": {
         "dev": "node scripts/dev.mjs",
         "dev:web": "node scripts/dev-web.mjs",
+        "dev:webstore": "node scripts/dev-webstore.mjs",
         "dev:api": "node --watch --experimental-sqlite server/dev-api.mjs",
         "build": "vite build",
+        "build:webstore": "vite build --config vite.webstore.config.ts",
         "preview": "vite preview --host 0.0.0.0 --port 4173",
         "start": "node --experimental-sqlite server/prod-server.mjs",
         "test": "node --experimental-sqlite --test server/*.test.mjs",

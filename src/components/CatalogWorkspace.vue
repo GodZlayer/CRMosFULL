@@ -84,6 +84,14 @@
  <i class="fa-solid fa-boxes-stacked me-2"></i>
  Repor em lote
  </button>
+ <button class="btn btn-outline-success rounded-pill" :disabled="!selectedCount" @click="setSelectedWebstoreVisibility(true)">
+ <i class="fa-solid fa-store me-2"></i>
+ Adicionar à webstore
+ </button>
+ <button class="btn btn-outline-warning rounded-pill" :disabled="!selectedCount" @click="setSelectedWebstoreVisibility(false)">
+ <i class="fa-solid fa-store-slash me-2"></i>
+ Remover da webstore
+ </button>
  <button class="btn btn-danger rounded-pill" :disabled="!selectedCount" @click="removeSelectedItems">
  <i class="fa-solid fa-trash me-2"></i>
  Excluir selecionados
@@ -240,6 +248,7 @@
  <div class="mb-2"><strong>Condição:</strong> {{ conditionLabel(selectedItem.item_condition) }}</div>
  <div class="mb-2"><strong>Destino:</strong> {{ locationTypeLabel(selectedItem.location_type || (selectedItem.is_store_inventory ? 'INVENTARIO' : 'ESTOQUE')) }}</div>
  <div class="mb-2"><strong>Status:</strong> {{ selectedItem.active ? 'Ativo' : 'Inativo' }}</div>
+ <div class="mb-2"><strong>Webstore:</strong> {{ Number(selectedItem.webstore_visible ?? 1) === 1 ? 'Exibido' : 'Oculto' }}</div>
  </div>
  </div>
  <div class="col-lg-6">
@@ -444,6 +453,10 @@
  <div class="panel-card">
  <div class="small fw-semibold mb-3">Detalhes avançados</div>
  <BarcodeField v-model="form.sku" label="SKU ou código do item" helper="Campo opcional. Use digitação, imagem ou câmera quando fizer sentido." placeholder="Digite ou leia o SKU" />
+ <label class="form-check d-flex align-items-center gap-2 mt-3 mb-0">
+ <input v-model="form.webstoreVisible" class="form-check-input mt-0" type="checkbox" />
+ <span class="fw-semibold">Exibir item na webstore</span>
+ </label>
  </div>
  <MediaCaptureField
  v-model="form.photoUpload"
@@ -801,6 +814,7 @@ const form = reactive({
  costAmount: 0,
  priceAmount: 0,
  active: true,
+  webstoreVisible: true,
   locationType: props.storeInventoryOnly ? "INVENTARIO" : "ESTOQUE",
   generateFinanceEntry: false,
   cashAccountId: 0,
@@ -928,6 +942,7 @@ const columns = [
  { title: "Venda unidade", field: "price_amount", hozAlign: "right", minWidth: 140, formatter: (cell: any) => currency(cell.getValue()) },
  { title: "Quantidade mínima", field: "min_stock", hozAlign: "center", minWidth: 150 },
  { title: "Quantidade atual", field: "stock_quantity", hozAlign: "center", minWidth: 150 },
+ { title: "Webstore", field: "webstore_visible", hozAlign: "center", minWidth: 120, formatter: (cell: any) => Number(cell.getValue() ?? 1) === 1 ? "Exibido" : "Oculto" },
  { title: "Adicionado em", field: "created_at", minWidth: 145, sorter: dateTimeSorter, formatter: (cell: any) => dateLabel(cell.getValue()) },
  { title: "Reposto em", field: "last_replenishment_at", minWidth: 145, sorter: dateTimeSorter, formatter: (cell: any) => dateLabel(cell.getValue()) },
  {
@@ -1198,6 +1213,7 @@ function resetForm() {
  costAmount: 0,
  priceAmount: 0,
  active: true,
+ webstoreVisible: true,
  locationType: props.storeInventoryOnly ? "INVENTARIO" : "ESTOQUE",
  generateFinanceEntry: false,
  cashAccountId: defaultCashAccountId.value,
@@ -1354,6 +1370,7 @@ function openEdit(row: Partial<CatalogItem>) {
  costAmount: Number(row.cost_amount || 0),
  priceAmount: Number(row.price_amount || 0),
  active: Boolean(row.active),
+ webstoreVisible: Number(row.webstore_visible ?? 1) === 1,
  locationType: String(row.location_type || (row.is_store_inventory ? "INVENTARIO" : "ESTOQUE")),
  photoUpload: null,
  photoPreview: row.photo_url || ""
@@ -1570,6 +1587,7 @@ async function saveItem() {
  const response = await api.saveCatalog({
  ...form,
  isStoreInventory: form.locationType === "INVENTARIO",
+ webstoreVisible: form.webstoreVisible,
  generateFinanceEntry: form.generateFinanceEntry,
  cashAccountId: form.cashAccountId,
  photoUpload: form.photoUpload,
@@ -1674,6 +1692,25 @@ async function removeRow(row: Record<string, unknown>) {
 
 async function removeSelectedItems() {
  await removeItems(selectedIds.value, `${selectedCount.value} item(ns)`);
+}
+
+async function setSelectedWebstoreVisibility(visible: boolean) {
+ if (!selectedIds.value.length) {
+ return;
+ }
+
+ try {
+ const count = selectedIds.value.length;
+ await api.updateCatalogWebstoreVisibility(selectedIds.value, visible);
+ await loadItems();
+ clearSelection();
+ await notifySuccess(
+ visible ? "Itens adicionados à webstore" : "Itens removidos da webstore",
+ `${count} item(ns) atualizado(s).`
+ );
+ } catch (error) {
+ await notifyError(error);
+ }
 }
 
 watch(

@@ -116,6 +116,7 @@ export interface CatalogItem {
   price_amount: number;
   is_complete: number;
   active: number;
+  webstore_visible: number;
   is_store_inventory: number;
   unit_margin: number;
   stock_cost_value: number;
@@ -259,6 +260,8 @@ export interface ServiceCatalogItem {
   id: number;
   name: string;
   description: string;
+  photo_path?: string;
+  photo_url?: string;
   price_amount: number;
   pricing_mode?: string;
   additional_price_amount?: number;
@@ -651,6 +654,150 @@ export interface AutomationRule {
   config_json: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface WebstoreSettings {
+  enabled: boolean;
+  checkoutEnabled: boolean;
+  respectBusinessHours: boolean;
+  openDays: number[];
+  openTime: string;
+  closeTime: string;
+  timezone: string;
+  storeName: string;
+  pageTitle: string;
+  headline: string;
+  logoText: string;
+  logoImageUrl: string;
+  logoMaxHeight: number;
+  logoUpload?: MediaUploadPayload | null;
+  logoPreview?: string;
+  logoRemove?: boolean;
+  heroImageUrl: string;
+  heroImageUpload?: MediaUploadPayload | null;
+  heroImagePreview?: string;
+  heroImageRemove?: boolean;
+  showcaseOneImageUrl: string;
+  showcaseOneImageUpload?: MediaUploadPayload | null;
+  showcaseOneImagePreview?: string;
+  showcaseOneImageRemove?: boolean;
+  showcaseTwoImageUrl: string;
+  showcaseTwoImageUpload?: MediaUploadPayload | null;
+  showcaseTwoImagePreview?: string;
+  showcaseTwoImageRemove?: boolean;
+  showcaseThreeImageUrl: string;
+  showcaseThreeImageUpload?: MediaUploadPayload | null;
+  showcaseThreeImagePreview?: string;
+  showcaseThreeImageRemove?: boolean;
+  subtitle: string;
+  closedMessage: string;
+  offlineMessage: string;
+  whatsapp: string;
+  googleBusinessUrl: string;
+  googleMapsUrl: string;
+  homepageEnabled: boolean;
+  heroTitle: string;
+  heroSubtitle: string;
+  heroCtaLabel: string;
+  servicesTitle: string;
+  bestSellersTitle: string;
+  aboutTitle: string;
+  aboutText: string;
+  statsYears: string;
+  statsYearsLabel: string;
+  statsClients: string;
+  statsClientsLabel: string;
+  companyOpeningYear: number;
+  statsClientsBase: number;
+  realClients?: number;
+  realShowcaseItems?: number;
+  differentiatorsTitle: string;
+  differentiatorOneTitle: string;
+  differentiatorOneText: string;
+  differentiatorTwoTitle: string;
+  differentiatorTwoText: string;
+  differentiatorThreeTitle: string;
+  differentiatorThreeText: string;
+  reviewsTitle: string;
+  reviewsSubtitle: string;
+  googleReviewOneName: string;
+  googleReviewOneText: string;
+  googleReviewTwoName: string;
+  googleReviewTwoText: string;
+  googleReviewThreeName: string;
+  googleReviewThreeText: string;
+  ctaTitle: string;
+  ctaText: string;
+  locationTitle: string;
+  address: string;
+  businessHoursText: string;
+  city: string;
+  contactEmail: string;
+  contactPhone: string;
+  featuredCategoriesLimit: number;
+  bestSellersLimit: number;
+  heroGradientFromColor: string;
+  heroGradientToColor: string;
+  heroGradientAngle: number;
+  surfaceGradientFromColor: string;
+  surfaceGradientToColor: string;
+  surfaceGradientAngle: number;
+  darkGradientFromColor: string;
+  darkGradientToColor: string;
+  darkGradientAngle: number;
+  heroImageX: number;
+  heroImageY: number;
+  heroImageZ: number;
+  showcaseOneImageX: number;
+  showcaseOneImageY: number;
+  showcaseOneImageZ: number;
+  showcaseTwoImageX: number;
+  showcaseTwoImageY: number;
+  showcaseTwoImageZ: number;
+  themePrimaryColor: string;
+  themeTextColor: string;
+  themeMutedColor: string;
+  themeBackgroundColor: string;
+  themeSurfaceColor: string;
+  themeLineColor: string;
+  themeAccentColor: string;
+  themeDarkColor: string;
+  themeFooterColor: string;
+  heroTitleSize: number;
+  heroSubtitleSize: number;
+  sectionTitleSize: number;
+  bodyTextSize: number;
+  cardTitleSize: number;
+  navTextSize: number;
+  businessHours: Array<{
+    day: number;
+    enabled: boolean;
+    openTime: string;
+    closeTime: string;
+  }>;
+  showProducts: boolean;
+  showServices: boolean;
+  hideOutOfStock: boolean;
+  allowCheckoutWhenClosed: boolean;
+  updatedAt?: string;
+}
+
+export interface WebstoreStatus {
+  isOpen: boolean;
+  reason: string;
+  label: string;
+  currentTime?: string;
+  openTime?: string;
+  closeTime?: string;
+}
+
+export interface GmailApiSettings {
+  email: string;
+  status: string;
+  connectedAt: string;
+  updatedAt: string;
+  clientId: string;
+  hasRefreshToken: boolean;
 }
 
 export interface AuditLog {

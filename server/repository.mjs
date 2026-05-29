@@ -100,6 +100,8 @@ export function createRepository(options = {}) {
     initSchema,
     seedDemo,
     syncCatalogStockBatches,
+    getWebstoreSettings,
+    saveWebstoreSettings,
     getMeta,
     authenticateUser,
     createSession,
@@ -205,6 +207,18 @@ export function createRepository(options = {}) {
     };
   }
 
+  function normalizeService(row) {
+    if (!row) {
+      return row;
+    }
+
+    return {
+      ...row,
+      description: row.description || "",
+      photo_url: row.photo_path ? `/uploads/${row.photo_path}` : ""
+    };
+  }
+
   function migrateCatalogItemsSchema() {
     const schemaSql = tableSql("catalog_items");
     if (!/sku\s+TEXT\s+NOT\s+NULL/i.test(schemaSql)) {
@@ -229,6 +243,7 @@ export function createRepository(options = {}) {
         price_amount REAL NOT NULL DEFAULT 0,
         is_complete INTEGER NOT NULL DEFAULT 0,
           active INTEGER NOT NULL DEFAULT 1,
+          webstore_visible INTEGER NOT NULL DEFAULT 1,
           is_store_inventory INTEGER NOT NULL DEFAULT 0,
           location_type TEXT NOT NULL DEFAULT 'ESTOQUE',
           deleted_at TEXT DEFAULT '',
@@ -238,11 +253,11 @@ export function createRepository(options = {}) {
 
         INSERT INTO catalog_items__new (
           id, sku, name, brand, category, subcategory, compatibility, description, item_condition, stock_quantity,
-          min_stock, cost_amount, price_amount, is_complete, active, is_store_inventory, deleted_at, created_at, updated_at
+          min_stock, cost_amount, price_amount, is_complete, active, webstore_visible, is_store_inventory, deleted_at, created_at, updated_at
         )
         SELECT
           id, NULLIF(sku, ''), name, COALESCE(brand, ''), category, subcategory, compatibility, COALESCE(description, ''), item_condition, stock_quantity,
-          min_stock, cost_amount, price_amount, is_complete, active, COALESCE(is_store_inventory, 0), '', created_at, updated_at
+          min_stock, cost_amount, price_amount, is_complete, active, 1, COALESCE(is_store_inventory, 0), '', created_at, updated_at
         FROM catalog_items;
 
       DROP TABLE catalog_items;
@@ -285,6 +300,8 @@ export function createRepository(options = {}) {
         address TEXT DEFAULT '',
         photo_path TEXT DEFAULT '',
         notes TEXT DEFAULT '',
+        email_confirmed_at TEXT DEFAULT '',
+        email_confirmation_token TEXT DEFAULT '',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -304,9 +321,10 @@ export function createRepository(options = {}) {
         min_stock INTEGER NOT NULL DEFAULT 0,
         cost_amount REAL NOT NULL DEFAULT 0,
         price_amount REAL NOT NULL DEFAULT 0,
-          is_complete INTEGER NOT NULL DEFAULT 0,
-          active INTEGER NOT NULL DEFAULT 1,
-          is_store_inventory INTEGER NOT NULL DEFAULT 0,
+        is_complete INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1,
+        webstore_visible INTEGER NOT NULL DEFAULT 1,
+        is_store_inventory INTEGER NOT NULL DEFAULT 0,
           location_type TEXT NOT NULL DEFAULT 'ESTOQUE',
           deleted_at TEXT DEFAULT '',
           created_at TEXT NOT NULL,
@@ -362,6 +380,7 @@ export function createRepository(options = {}) {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         description TEXT DEFAULT '',
+        photo_path TEXT DEFAULT '',
         price_amount REAL NOT NULL DEFAULT 0,
         pricing_mode TEXT NOT NULL DEFAULT 'FIXED',
         additional_price_amount REAL NOT NULL DEFAULT 0,
@@ -386,6 +405,35 @@ export function createRepository(options = {}) {
         line_total REAL NOT NULL DEFAULT 0,
         FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
         FOREIGN KEY (service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT
+      );
+
+      CREATE TABLE IF NOT EXISTS stores (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_code TEXT NOT NULL UNIQUE,
+        code TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        short_name TEXT DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS store_cash_accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_id INTEGER DEFAULT NULL,
+        code TEXT DEFAULT '',
+        name TEXT DEFAULT '',
+        baseline_amount REAL NOT NULL DEFAULT 0,
+        balance_amount REAL NOT NULL DEFAULT 0,
+        snapshot_source_workbook TEXT DEFAULT '',
+        snapshot_source_sheet TEXT DEFAULT '',
+        snapshot_source_row INTEGER DEFAULT NULL,
+        snapshot_raw_payload TEXT DEFAULT '',
+        snapshot_updated_at TEXT DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT '',
+        updated_at TEXT DEFAULT '',
+        FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE
       );
 
       CREATE TABLE IF NOT EXISTS order_requested_products (
@@ -487,9 +535,33 @@ export function createRepository(options = {}) {
       );
     `);
     addColumnIfMissing('clients', 'photo_path', "TEXT DEFAULT ''");
+    addColumnIfMissing('clients', 'email_confirmed_at', "TEXT DEFAULT ''");
+    addColumnIfMissing('clients', 'email_confirmation_token', "TEXT DEFAULT ''");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS crm_email_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL DEFAULT 'CRM',
+        entity_type TEXT DEFAULT '',
+        entity_id INTEGER DEFAULT NULL,
+        client_id INTEGER DEFAULT NULL,
+        from_email TEXT DEFAULT '',
+        to_email TEXT NOT NULL,
+        cc_email TEXT DEFAULT '',
+        bcc_email TEXT DEFAULT '',
+        subject TEXT NOT NULL,
+        body_text TEXT DEFAULT '',
+        body_html TEXT DEFAULT '',
+        status TEXT NOT NULL,
+        provider_message_id TEXT DEFAULT '',
+        error_message TEXT DEFAULT '',
+        created_at TEXT NOT NULL,
+        sent_at TEXT DEFAULT ''
+      );
+    `);
     addColumnIfMissing('catalog_items', 'description', "TEXT DEFAULT ''");
     addColumnIfMissing('catalog_items', 'photo_path', "TEXT DEFAULT ''");
     addColumnIfMissing('catalog_items', 'brand', "TEXT DEFAULT ''");
+      addColumnIfMissing('catalog_items', 'webstore_visible', 'INTEGER NOT NULL DEFAULT 1');
       addColumnIfMissing('catalog_items', 'is_store_inventory', 'INTEGER NOT NULL DEFAULT 0');
       addColumnIfMissing('catalog_items', 'location_type', "TEXT NOT NULL DEFAULT 'ESTOQUE'");
       addColumnIfMissing('catalog_items', 'deleted_at', "TEXT DEFAULT ''");
@@ -512,6 +584,7 @@ export function createRepository(options = {}) {
     addColumnIfMissing('service_catalog', 'allow_custom_price', 'INTEGER NOT NULL DEFAULT 0');
     addColumnIfMissing('service_catalog', 'pricing_mode', "TEXT NOT NULL DEFAULT 'FIXED'");
     addColumnIfMissing('service_catalog', 'additional_price_amount', 'REAL NOT NULL DEFAULT 0');
+    addColumnIfMissing('service_catalog', 'photo_path', "TEXT DEFAULT ''");
     addColumnIfMissing('order_services', 'line_total', 'REAL NOT NULL DEFAULT 0');
     addColumnIfMissing('order_requested_products', 'quantity', 'INTEGER NOT NULL DEFAULT 1');
     addColumnIfMissing('order_requested_products', 'sale_price', 'REAL NOT NULL DEFAULT 0');
@@ -1363,11 +1436,318 @@ export function createRepository(options = {}) {
         // Best effort cleanup for local client uploads.
       }
 
+      try {
+        rmSync(join(uploadsRoot, "services"), { recursive: true, force: true });
+      } catch {
+        // Best effort cleanup for local service uploads.
+      }
+
+      try {
+        rmSync(join(uploadsRoot, "webstore"), { recursive: true, force: true });
+      } catch {
+        // Best effort cleanup for local webstore uploads.
+      }
+
       return {
         success: true,
         summary
       };
     });
+  }
+
+  function getWebstoreDefaults() {
+    return {
+      enabled: true,
+      checkoutEnabled: true,
+      respectBusinessHours: false,
+      openDays: [1, 2, 3, 4, 5, 6],
+      openTime: "09:00",
+      closeTime: "18:00",
+      timezone: "America/Sao_Paulo",
+      storeName: "Brasil Express",
+      pageTitle: "Brasil Express",
+      headline: "Webstore Brasil Express",
+      logoText: "Brasil Express",
+      logoImageUrl: "",
+      logoMaxHeight: 64,
+      heroImageUrl: "",
+      showcaseOneImageUrl: "",
+      showcaseTwoImageUrl: "",
+      showcaseThreeImageUrl: "",
+      subtitle: "Produtos e serviços técnicos com pedido direto para o CRM.",
+      closedMessage: "Loja fechada no momento. Volte no próximo horário de atendimento.",
+      offlineMessage: "Não foi possível conectar ao CRM. A vitrine está temporariamente indisponível.",
+      whatsapp: "5531999042766",
+      googleBusinessUrl: "",
+      homepageEnabled: true,
+      heroTitle: "Há mais de 20 anos atendendo equipamentos de informática com qualidade e confiança",
+      heroSubtitle: "Empresas e usuários contam com atendimento presencial, diagnóstico transparente e soluções técnicas para computadores, notebooks e periféricos.",
+      heroCtaLabel: "Faça seu orçamento on-line",
+      servicesTitle: "Serviços para Equipamentos de Informática",
+      bestSellersTitle: "Mais vendidos",
+      aboutTitle: "Quem somos nós",
+      aboutText: "A Brasil Express atua no Prado com atendimento técnico presencial, montagem de computadores sob demanda e orientação clara para cada necessidade. Nossa prioridade é entregar confiança, precisão e responsabilidade em cada orçamento.",
+      statsYears: "20",
+      statsYearsLabel: "Anos no mercado",
+      statsClients: "5000",
+      statsClientsLabel: "Clientes atendidos",
+      companyOpeningYear: 2004,
+      statsClientsBase: 5000,
+      differentiatorsTitle: "Diferenciais",
+      differentiatorOneTitle: "Equipe técnica",
+      differentiatorOneText: "Atendimento humano, diagnóstico objetivo e experiência prática com equipamentos de uso doméstico e profissional.",
+      differentiatorTwoTitle: "Qualidade e transparência",
+      differentiatorTwoText: "Orçamentos claros, registro no CRM e acompanhamento do serviço do início ao fim.",
+      differentiatorThreeTitle: "Projetos personalizados",
+      differentiatorThreeText: "Montagem, upgrade e seleção de peças conforme perfil de uso, orçamento e disponibilidade de estoque.",
+      reviewsTitle: "Avaliações de clientes",
+      reviewsSubtitle: "Últimas recomendações positivas publicadas por clientes no Google.",
+      googleReviewOneName: "Cliente Google",
+      googleReviewOneText: "Atendimento excelente, equipe atenciosa e orçamento transparente.",
+      googleReviewTwoName: "Cliente Google",
+      googleReviewTwoText: "Resolveram meu computador com rapidez e explicaram tudo com clareza.",
+      googleReviewThreeName: "Cliente Google",
+      googleReviewThreeText: "Loja confiável, atendimento presencial e serviço muito bem feito.",
+      ctaTitle: "Atendimento rápido pelo WhatsApp",
+      ctaText: "Entre em contato com um especialista e solicite seu orçamento sem compromisso.",
+      locationTitle: "Localização",
+      address: "Av. Francisco Sá 787 - Loja 111",
+      businessHoursText: "Segunda a sábado, das 09:00 às 18:00",
+      city: "Belo Horizonte - MG",
+      contactEmail: "",
+      contactPhone: "(31) 99904-2766",
+      featuredCategoriesLimit: 4,
+      bestSellersLimit: 3,
+      googleMapsUrl: "https://maps.google.com/maps?q=Av.%20Francisco%20Sa%20787%20Loja%20111%20Belo%20Horizonte",
+      heroGradientFromColor: "#6fff96",
+      heroGradientToColor: "#2176ae",
+      heroGradientAngle: 135,
+      surfaceGradientFromColor: "#ffffff",
+      surfaceGradientToColor: "#f5f7fb",
+      surfaceGradientAngle: 180,
+      darkGradientFromColor: "#6fff96",
+      darkGradientToColor: "#2176ae",
+      darkGradientAngle: 335,
+      heroImageX: 0,
+      heroImageY: 0,
+      heroImageZ: 1,
+      showcaseOneImageX: 58,
+      showcaseOneImageY: 10,
+      showcaseOneImageZ: 2,
+      showcaseTwoImageX: 34,
+      showcaseTwoImageY: 58,
+      showcaseTwoImageZ: 3,
+      themePrimaryColor: "#12335a",
+      themeTextColor: "#101827",
+      themeMutedColor: "#64748b",
+      themeBackgroundColor: "#ffffff",
+      themeSurfaceColor: "#f5f7fb",
+      themeLineColor: "#dbe4ee",
+      themeAccentColor: "#f4b63f",
+      themeDarkColor: "#0b1220",
+      themeFooterColor: "#0b1220",
+      heroTitleSize: 64,
+      heroSubtitleSize: 20,
+      sectionTitleSize: 48,
+      bodyTextSize: 16,
+      cardTitleSize: 18,
+      navTextSize: 14,
+      businessHours: [
+        { day: 0, enabled: false, openTime: "09:00", closeTime: "18:00" },
+        { day: 1, enabled: true, openTime: "09:00", closeTime: "18:00" },
+        { day: 2, enabled: true, openTime: "09:00", closeTime: "18:00" },
+        { day: 3, enabled: true, openTime: "09:00", closeTime: "18:00" },
+        { day: 4, enabled: true, openTime: "09:00", closeTime: "18:00" },
+        { day: 5, enabled: true, openTime: "09:00", closeTime: "18:00" },
+        { day: 6, enabled: true, openTime: "09:00", closeTime: "18:00" }
+      ],
+      showProducts: true,
+      showServices: true,
+      hideOutOfStock: false,
+      allowCheckoutWhenClosed: false,
+      updatedAt: ""
+    };
+  }
+
+  function parseWebstoreSettings(value) {
+    if (!value) {
+      return {};
+    }
+    try {
+      return JSON.parse(String(value));
+    } catch {
+      return {};
+    }
+  }
+
+  function normalizeWebstoreSettings(payload = {}, previous = {}) {
+    const defaults = getWebstoreDefaults();
+    const merged = { ...defaults, ...previous, ...payload };
+    const openDays = Array.isArray(merged.openDays)
+      ? merged.openDays.map((day) => Number(day)).filter((day) => day >= 0 && day <= 6)
+      : defaults.openDays;
+
+    const logoMaxHeight = Math.max(32, Math.min(140, Number(merged.logoMaxHeight || defaults.logoMaxHeight) || defaults.logoMaxHeight));
+    const pageTitle = normalizeText(merged.pageTitle || merged.storeName, defaults.pageTitle) || defaults.pageTitle;
+    const logoText = normalizeText(merged.logoText || merged.headline || merged.storeName, defaults.logoText) || defaults.logoText;
+    const color = (value, fallback) => /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value || "")) ? String(value) : fallback;
+    const size = (value, fallback, min, max) => Math.max(min, Math.min(max, Number(value || fallback) || fallback));
+    const percent = (value, fallback) => Math.max(0, Math.min(100, Number(value ?? fallback) || fallback));
+    const layer = (value, fallback) => Math.max(1, Math.min(9, Number.parseInt(String(value ?? fallback), 10) || fallback));
+    const angle = (value, fallback) => Math.max(0, Math.min(360, Number(value ?? fallback) || fallback));
+    const time = (value, fallback) => /^\d{2}:\d{2}$/.test(String(value || "")) ? String(value) : fallback;
+    const rawBusinessHours = Array.isArray(merged.businessHours) ? merged.businessHours : defaults.businessHours;
+    const businessHours = defaults.businessHours.map((defaultDay) => {
+      const source = rawBusinessHours.find((item) => Number(item?.day) === defaultDay.day) || {};
+      return {
+        day: defaultDay.day,
+        enabled: source.enabled === true || Number(source.enabled) === 1,
+        openTime: time(source.openTime, merged.openTime || defaultDay.openTime),
+        closeTime: time(source.closeTime, merged.closeTime || defaultDay.closeTime)
+      };
+    });
+
+    return {
+      enabled: merged.enabled !== false && Number(merged.enabled) !== 0,
+      checkoutEnabled: merged.checkoutEnabled !== false && Number(merged.checkoutEnabled) !== 0,
+      respectBusinessHours: merged.respectBusinessHours === true || Number(merged.respectBusinessHours) === 1,
+      openDays: [...new Set(openDays)].sort((a, b) => a - b),
+      openTime: /^\d{2}:\d{2}$/.test(String(merged.openTime || "")) ? String(merged.openTime) : defaults.openTime,
+      closeTime: /^\d{2}:\d{2}$/.test(String(merged.closeTime || "")) ? String(merged.closeTime) : defaults.closeTime,
+      timezone: normalizeText(merged.timezone, defaults.timezone) || defaults.timezone,
+      storeName: pageTitle,
+      pageTitle,
+      headline: logoText,
+      logoText,
+      logoImageUrl: normalizeText(merged.logoImageUrl),
+      logoMaxHeight,
+      heroImageUrl: normalizeText(merged.heroImageUrl),
+      showcaseOneImageUrl: normalizeText(merged.showcaseOneImageUrl),
+      showcaseTwoImageUrl: normalizeText(merged.showcaseTwoImageUrl),
+      showcaseThreeImageUrl: normalizeText(merged.showcaseThreeImageUrl),
+      subtitle: normalizeText(merged.subtitle, defaults.subtitle) || defaults.subtitle,
+      closedMessage: normalizeText(merged.closedMessage, defaults.closedMessage) || defaults.closedMessage,
+      offlineMessage: normalizeText(merged.offlineMessage, defaults.offlineMessage) || defaults.offlineMessage,
+      whatsapp: normalizeText(merged.whatsapp, defaults.whatsapp) || defaults.whatsapp,
+      googleBusinessUrl: normalizeText(merged.googleBusinessUrl),
+      homepageEnabled: merged.homepageEnabled !== false && Number(merged.homepageEnabled) !== 0,
+      heroTitle: normalizeText(merged.heroTitle, defaults.heroTitle) || defaults.heroTitle,
+      heroSubtitle: normalizeText(merged.heroSubtitle, defaults.heroSubtitle) || defaults.heroSubtitle,
+      heroCtaLabel: normalizeText(merged.heroCtaLabel, defaults.heroCtaLabel) || defaults.heroCtaLabel,
+      servicesTitle: normalizeText(merged.servicesTitle, defaults.servicesTitle) || defaults.servicesTitle,
+      bestSellersTitle: normalizeText(merged.bestSellersTitle || merged.servicesTitle, defaults.bestSellersTitle) || defaults.bestSellersTitle,
+      aboutTitle: normalizeText(merged.aboutTitle, defaults.aboutTitle) || defaults.aboutTitle,
+      aboutText: normalizeText(merged.aboutText, defaults.aboutText) || defaults.aboutText,
+      statsYears: normalizeText(merged.statsYears, defaults.statsYears).replace(/^\+/, "") || defaults.statsYears,
+      statsYearsLabel: normalizeText(merged.statsYearsLabel, defaults.statsYearsLabel) || defaults.statsYearsLabel,
+      statsClients: normalizeText(merged.statsClients, defaults.statsClients).replace(/^\+/, "") || defaults.statsClients,
+      statsClientsLabel: normalizeText(merged.statsClientsLabel, defaults.statsClientsLabel) || defaults.statsClientsLabel,
+      companyOpeningYear: Math.max(1900, Math.min(2099, Number(merged.companyOpeningYear || defaults.companyOpeningYear) || defaults.companyOpeningYear)),
+      statsClientsBase: Math.max(0, Number(merged.statsClientsBase || defaults.statsClientsBase) || defaults.statsClientsBase),
+      differentiatorsTitle: normalizeText(merged.differentiatorsTitle, defaults.differentiatorsTitle) || defaults.differentiatorsTitle,
+      differentiatorOneTitle: normalizeText(merged.differentiatorOneTitle, defaults.differentiatorOneTitle) || defaults.differentiatorOneTitle,
+      differentiatorOneText: normalizeText(merged.differentiatorOneText, defaults.differentiatorOneText) || defaults.differentiatorOneText,
+      differentiatorTwoTitle: normalizeText(merged.differentiatorTwoTitle, defaults.differentiatorTwoTitle) || defaults.differentiatorTwoTitle,
+      differentiatorTwoText: normalizeText(merged.differentiatorTwoText, defaults.differentiatorTwoText) || defaults.differentiatorTwoText,
+      differentiatorThreeTitle: normalizeText(merged.differentiatorThreeTitle, defaults.differentiatorThreeTitle) || defaults.differentiatorThreeTitle,
+      differentiatorThreeText: normalizeText(merged.differentiatorThreeText, defaults.differentiatorThreeText) || defaults.differentiatorThreeText,
+      reviewsTitle: normalizeText(merged.reviewsTitle, defaults.reviewsTitle) || defaults.reviewsTitle,
+      reviewsSubtitle: normalizeText(merged.reviewsSubtitle, defaults.reviewsSubtitle) || defaults.reviewsSubtitle,
+      googleReviewOneName: normalizeText(merged.googleReviewOneName),
+      googleReviewOneText: normalizeText(merged.googleReviewOneText),
+      googleReviewTwoName: normalizeText(merged.googleReviewTwoName),
+      googleReviewTwoText: normalizeText(merged.googleReviewTwoText),
+      googleReviewThreeName: normalizeText(merged.googleReviewThreeName),
+      googleReviewThreeText: normalizeText(merged.googleReviewThreeText),
+      ctaTitle: normalizeText(merged.ctaTitle, defaults.ctaTitle) || defaults.ctaTitle,
+      ctaText: normalizeText(merged.ctaText, defaults.ctaText) || defaults.ctaText,
+      locationTitle: normalizeText(merged.locationTitle, defaults.locationTitle) || defaults.locationTitle,
+      address: normalizeText(merged.address, defaults.address) || defaults.address,
+      businessHoursText: normalizeText(merged.businessHoursText, defaults.businessHoursText) || defaults.businessHoursText,
+      city: normalizeText(merged.city, defaults.city) || defaults.city,
+      contactEmail: normalizeText(merged.contactEmail),
+      contactPhone: normalizeText(merged.contactPhone, defaults.contactPhone) || defaults.contactPhone,
+      featuredCategoriesLimit: Math.max(0, Math.min(12, Number(merged.featuredCategoriesLimit || defaults.featuredCategoriesLimit) || defaults.featuredCategoriesLimit)),
+      bestSellersLimit: Math.max(0, Math.min(3, Number(merged.bestSellersLimit || defaults.bestSellersLimit) || defaults.bestSellersLimit)),
+      googleMapsUrl: normalizeText(merged.googleMapsUrl || merged.mapsUrl || defaults.googleMapsUrl),
+      themePrimaryColor: color(merged.themePrimaryColor, defaults.themePrimaryColor),
+      themeTextColor: color(merged.themeTextColor, defaults.themeTextColor),
+      themeMutedColor: color(merged.themeMutedColor, defaults.themeMutedColor),
+      themeBackgroundColor: color(merged.themeBackgroundColor, defaults.themeBackgroundColor),
+      themeSurfaceColor: color(merged.themeSurfaceColor, defaults.themeSurfaceColor),
+      themeLineColor: color(merged.themeLineColor, defaults.themeLineColor),
+      themeAccentColor: color(merged.themeAccentColor, defaults.themeAccentColor),
+      themeDarkColor: color(merged.themeDarkColor, defaults.themeDarkColor),
+      themeFooterColor: color(merged.themeFooterColor, defaults.themeFooterColor),
+      heroGradientFromColor: color(merged.heroGradientFromColor, defaults.heroGradientFromColor),
+      heroGradientToColor: color(merged.heroGradientToColor, defaults.heroGradientToColor),
+      heroGradientAngle: angle(merged.heroGradientAngle, defaults.heroGradientAngle),
+      surfaceGradientFromColor: color(merged.surfaceGradientFromColor, defaults.surfaceGradientFromColor),
+      surfaceGradientToColor: color(merged.surfaceGradientToColor, defaults.surfaceGradientToColor),
+      surfaceGradientAngle: angle(merged.surfaceGradientAngle, defaults.surfaceGradientAngle),
+      darkGradientFromColor: color(merged.darkGradientFromColor, defaults.darkGradientFromColor),
+      darkGradientToColor: color(merged.darkGradientToColor, defaults.darkGradientToColor),
+      darkGradientAngle: angle(merged.darkGradientAngle, defaults.darkGradientAngle),
+      heroImageX: percent(merged.heroImageX, defaults.heroImageX),
+      heroImageY: percent(merged.heroImageY, defaults.heroImageY),
+      heroImageZ: layer(merged.heroImageZ, defaults.heroImageZ),
+      showcaseOneImageX: percent(merged.showcaseOneImageX, defaults.showcaseOneImageX),
+      showcaseOneImageY: percent(merged.showcaseOneImageY, defaults.showcaseOneImageY),
+      showcaseOneImageZ: layer(merged.showcaseOneImageZ, defaults.showcaseOneImageZ),
+      showcaseTwoImageX: percent(merged.showcaseTwoImageX, defaults.showcaseTwoImageX),
+      showcaseTwoImageY: percent(merged.showcaseTwoImageY, defaults.showcaseTwoImageY),
+      showcaseTwoImageZ: layer(merged.showcaseTwoImageZ, defaults.showcaseTwoImageZ),
+      heroTitleSize: size(merged.heroTitleSize, defaults.heroTitleSize, 28, 96),
+      heroSubtitleSize: size(merged.heroSubtitleSize, defaults.heroSubtitleSize, 14, 36),
+      sectionTitleSize: size(merged.sectionTitleSize, defaults.sectionTitleSize, 22, 72),
+      bodyTextSize: size(merged.bodyTextSize, defaults.bodyTextSize, 13, 24),
+      cardTitleSize: size(merged.cardTitleSize, defaults.cardTitleSize, 14, 32),
+      navTextSize: size(merged.navTextSize, defaults.navTextSize, 12, 22),
+      businessHours,
+      showProducts: merged.showProducts !== false && Number(merged.showProducts) !== 0,
+      showServices: merged.showServices !== false && Number(merged.showServices) !== 0,
+      hideOutOfStock: merged.hideOutOfStock === true || Number(merged.hideOutOfStock) === 1,
+      allowCheckoutWhenClosed: merged.allowCheckoutWhenClosed === true || Number(merged.allowCheckoutWhenClosed) === 1,
+      updatedAt: normalizeText(merged.updatedAt)
+    };
+  }
+
+  function getWebstoreSettings() {
+    const row = get("SELECT value FROM app_settings WHERE key = 'webstore_settings'");
+    return normalizeWebstoreSettings(parseWebstoreSettings(row?.value));
+  }
+
+  function saveWebstoreSettings(payload = {}) {
+    const previous = getWebstoreSettings();
+    const nextImages = {
+      logoImageUrl: saveWebstoreImageSetting(previous.logoImageUrl, payload.logoImageUrl, payload.logoUpload, payload.logoRemove, "logo"),
+      heroImageUrl: saveWebstoreImageSetting(previous.heroImageUrl, payload.heroImageUrl, payload.heroImageUpload, payload.heroImageRemove, "hero"),
+      showcaseOneImageUrl: saveWebstoreImageSetting(previous.showcaseOneImageUrl, payload.showcaseOneImageUrl, payload.showcaseOneImageUpload, payload.showcaseOneImageRemove, "showcase-one"),
+      showcaseTwoImageUrl: saveWebstoreImageSetting(previous.showcaseTwoImageUrl, payload.showcaseTwoImageUrl, payload.showcaseTwoImageUpload, payload.showcaseTwoImageRemove, "showcase-two"),
+      showcaseThreeImageUrl: saveWebstoreImageSetting(previous.showcaseThreeImageUrl, payload.showcaseThreeImageUrl, payload.showcaseThreeImageUpload, payload.showcaseThreeImageRemove, "showcase-three")
+    };
+    const next = normalizeWebstoreSettings({ ...payload, ...nextImages, updatedAt: nowIso() }, previous);
+    run(
+      `
+        INSERT INTO app_settings (key, value)
+        VALUES ('webstore_settings', :value)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `,
+      { value: JSON.stringify(next) }
+    );
+    return getWebstoreSettings();
+  }
+
+  function saveWebstoreImageSetting(previousUrl = "", payloadUrl = "", upload = null, remove = false, prefix = "asset") {
+    let nextUrl = normalizeText(payloadUrl ?? previousUrl);
+    if ((upload?.base64 || remove === true) && previousUrl) {
+      removeUploadDirectoryByRelativePath(previousUrl.replace(/^\/uploads\//, ""));
+      nextUrl = "";
+    }
+    if (upload?.base64) {
+      nextUrl = `/uploads/${saveWebstoreAsset(upload.base64, upload.name, prefix)}`;
+    }
+    return nextUrl;
   }
 
   function getMeta() {
@@ -1489,6 +1869,8 @@ export function createRepository(options = {}) {
           c.address,
           c.photo_path,
           c.notes,
+          c.email_confirmed_at,
+          c.email_confirmation_token,
           c.created_at,
           c.updated_at,
           COUNT(o.id) AS orders_count,
@@ -1533,7 +1915,9 @@ export function createRepository(options = {}) {
       email: normalizeText(payload.email),
       document: normalizeText(payload.document),
       address: normalizeText(payload.address),
-      notes: normalizeText(payload.notes)
+      notes: normalizeText(payload.notes),
+      emailConfirmedAt: normalizeText(payload.emailConfirmedAt || payload.email_confirmed_at),
+      emailConfirmationToken: normalizeText(payload.emailConfirmationToken || payload.email_confirmation_token)
     };
     const existing = normalized.id
       ? get("SELECT id, photo_path FROM clients WHERE id = :id", { id: normalized.id })
@@ -1564,7 +1948,10 @@ export function createRepository(options = {}) {
         `
           UPDATE clients
           SET name = :name, phone = :phone, email = :email, document = :document,
-              address = :address, photo_path = :photoPath, notes = :notes, updated_at = :updatedAt
+              address = :address, photo_path = :photoPath, notes = :notes,
+              email_confirmed_at = :emailConfirmedAt,
+              email_confirmation_token = :emailConfirmationToken,
+              updated_at = :updatedAt
           WHERE id = :id
         `,
         {
@@ -1578,8 +1965,14 @@ export function createRepository(options = {}) {
 
     const result = run(
       `
-        INSERT INTO clients (name, phone, email, document, address, notes, created_at, updated_at)
-        VALUES (:name, :phone, :email, :document, :address, :notes, :createdAt, :updatedAt)
+        INSERT INTO clients (
+          name, phone, email, document, address, notes,
+          email_confirmed_at, email_confirmation_token, created_at, updated_at
+        )
+        VALUES (
+          :name, :phone, :email, :document, :address, :notes,
+          :emailConfirmedAt, :emailConfirmationToken, :createdAt, :updatedAt
+        )
       `,
       (() => {
         const { id: _id, ...insertPayload } = normalized;
@@ -2050,6 +2443,7 @@ export function createRepository(options = {}) {
       priceAmount: Number(payload.priceAmount ?? 0),
       isComplete: 0,
       active: payload.active === false ? 0 : 1,
+      webstoreVisible: payload.webstoreVisible === false || Number(payload.webstore_visible) === 0 ? 0 : 1,
       isStoreInventory: locationType === "INVENTARIO" ? 1 : 0,
       locationType
     };
@@ -2084,6 +2478,7 @@ export function createRepository(options = {}) {
           SET sku = :sku, name = :name, brand = :brand, category = :category, subcategory = :subcategory,
                 compatibility = :compatibility, description = :description, photo_path = :photoPath, item_condition = :itemCondition,
               min_stock = :minStock, cost_amount = :costAmount, price_amount = :priceAmount, is_complete = :isComplete, active = :active,
+              webstore_visible = :webstoreVisible,
               is_store_inventory = :isStoreInventory, location_type = :locationType, updated_at = :updatedAt
           WHERE id = :id
         `,
@@ -2131,11 +2526,11 @@ export function createRepository(options = {}) {
       `
         INSERT INTO catalog_items (
           sku, name, brand, category, subcategory, compatibility, description, item_condition, stock_quantity,
-            min_stock, cost_amount, price_amount, is_complete, active, is_store_inventory, location_type, created_at, updated_at
+            min_stock, cost_amount, price_amount, is_complete, active, webstore_visible, is_store_inventory, location_type, created_at, updated_at
         )
         VALUES (
           :sku, :name, :brand, :category, :subcategory, :compatibility, :description, :itemCondition, :stockQuantity,
-            :minStock, :costAmount, :priceAmount, :isComplete, :active, :isStoreInventory, :locationType, :createdAt, :updatedAt
+            :minStock, :costAmount, :priceAmount, :isComplete, :active, :webstoreVisible, :isStoreInventory, :locationType, :createdAt, :updatedAt
         )
       `,
       {
@@ -2658,11 +3053,11 @@ export function createRepository(options = {}) {
         return false;
       }
       return true;
-    });
+    }).map(normalizeService);
   }
 
   function getService(serviceId) {
-    return get("SELECT * FROM service_catalog WHERE id = :id", { id: serviceId }) || null;
+    return normalizeService(get("SELECT * FROM service_catalog WHERE id = :id", { id: serviceId }) || null);
   }
 
   function saveService(payload = {}) {
@@ -2686,11 +3081,25 @@ export function createRepository(options = {}) {
     }
 
     if (normalized.id) {
+      const existing = get("SELECT id, photo_path FROM service_catalog WHERE id = :id", { id: normalized.id });
+      if (!existing) {
+        throw new Error("Servico nao encontrado.");
+      }
+      let photoPath = existing.photo_path || "";
+      const shouldRemovePhoto = payload.photoPreview === "" && !payload.photoUpload?.base64;
+      if ((payload.photoUpload?.base64 || shouldRemovePhoto) && photoPath) {
+        removeUploadDirectoryByRelativePath(photoPath);
+        photoPath = "";
+      }
+      if (payload.photoUpload?.base64) {
+        photoPath = saveServicePhoto(normalized.id, payload.photoUpload.base64, payload.photoUpload.name);
+      }
       run(
         `
           UPDATE service_catalog
           SET name = :name,
               description = :description,
+              photo_path = :photoPath,
               price_amount = :priceAmount,
               pricing_mode = :pricingMode,
               additional_price_amount = :additionalPriceAmount,
@@ -2704,6 +3113,7 @@ export function createRepository(options = {}) {
         `,
         {
           ...normalized,
+          photoPath,
           updatedAt: timestamp
         }
       );
@@ -2713,10 +3123,10 @@ export function createRepository(options = {}) {
     const result = run(
       `
         INSERT INTO service_catalog (
-          name, description, price_amount, pricing_mode, additional_price_amount, estimated_minutes, available_in_order, available_in_pdv, allow_custom_price, active, created_at, updated_at
+          name, description, photo_path, price_amount, pricing_mode, additional_price_amount, estimated_minutes, available_in_order, available_in_pdv, allow_custom_price, active, created_at, updated_at
         )
         VALUES (
-          :name, :description, :priceAmount, :pricingMode, :additionalPriceAmount, :estimatedMinutes, :availableInOrder, :availableInPdv, :allowCustomPrice, :active, :createdAt, :updatedAt
+          :name, :description, '', :priceAmount, :pricingMode, :additionalPriceAmount, :estimatedMinutes, :availableInOrder, :availableInPdv, :allowCustomPrice, :active, :createdAt, :updatedAt
         )
       `,
       {
@@ -2726,7 +3136,24 @@ export function createRepository(options = {}) {
       }
     );
 
-    return getService(Number(result.lastInsertRowid));
+    const createdId = Number(result.lastInsertRowid);
+    if (payload.photoUpload?.base64) {
+      const photoPath = saveServicePhoto(createdId, payload.photoUpload.base64, payload.photoUpload.name);
+      run(
+        `
+          UPDATE service_catalog
+          SET photo_path = :photoPath,
+              updated_at = :updatedAt
+          WHERE id = :id
+        `,
+        {
+          id: createdId,
+          photoPath,
+          updatedAt: timestamp
+        }
+      );
+    }
+    return getService(createdId);
   }
 
   function deleteService(serviceId) {
@@ -2740,6 +3167,9 @@ export function createRepository(options = {}) {
       throw new Error("Servico ja vinculado a OS e nao pode ser excluido.");
     }
 
+    if (service.photo_path) {
+      removeUploadDirectoryByRelativePath(service.photo_path);
+    }
     run("DELETE FROM service_catalog WHERE id = :id", { id: serviceId });
     return { success: true };
   }
@@ -3247,6 +3677,34 @@ export function createRepository(options = {}) {
     writeFileSync(targetFile, Buffer.from(base64Content, "base64"));
 
     return join(relativeDir, `imagem${extension}`).replaceAll("\\", "/");
+  }
+
+  function saveServicePhoto(serviceId, base64, fileName = "servico.jpg") {
+    const safeName = normalizeText(fileName, "servico.jpg").replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const extension = extname(safeName) || ".jpg";
+    const relativeDir = join("services", String(serviceId));
+    const absoluteDir = join(uploadsRoot, relativeDir);
+    mkdirSync(absoluteDir, { recursive: true });
+
+    const base64Content = String(base64).includes(",") ? String(base64).split(",").pop() : String(base64);
+    const targetFile = join(absoluteDir, `imagem${extension}`);
+    writeFileSync(targetFile, Buffer.from(base64Content, "base64"));
+
+    return join(relativeDir, `imagem${extension}`).replaceAll("\\", "/");
+  }
+
+  function saveWebstoreAsset(base64, fileName = "asset.jpg", prefix = "asset") {
+    const safeName = normalizeText(fileName, "asset.jpg").replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const extension = extname(safeName) || ".jpg";
+    const relativeDir = join("webstore", prefix);
+    const absoluteDir = join(uploadsRoot, relativeDir);
+    mkdirSync(absoluteDir, { recursive: true });
+
+    const base64Content = String(base64).includes(",") ? String(base64).split(",").pop() : String(base64);
+    const targetFile = join(absoluteDir, `${prefix}-${Date.now()}${extension}`);
+    writeFileSync(targetFile, Buffer.from(base64Content, "base64"));
+
+    return join(relativeDir, basename(targetFile)).replaceAll("\\", "/");
   }
 
   function saveOrderPhoto(orderCode, orderDate, base64, fileName = "foto.jpg") {
