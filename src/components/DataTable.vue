@@ -116,8 +116,7 @@
               class="form-check-input"
               type="checkbox"
               :checked="isRowSelected(row)"
-              @click.stop
-              @change="toggleCardSelection(row, $event)"
+              @click.stop="toggleCardSelection(row, $event)"
             />
           </div>
 
@@ -359,7 +358,6 @@ let printPrepared = false;
 let scheduledRenderId = 0;
 let isComponentUnmounted = false;
 let hasCustomVisibleColumns = false;
-let isSyncingSelection = false;
 let lastSelectionAnchorKey: string | number | null = null;
 
 const pageSize = ref(resolveInitialPageSize());
@@ -718,22 +716,35 @@ function syncTableSelectionFromKeys() {
   if (isCardMode.value || !props.selectableRows || !tableInstance) {
     return;
   }
-  isSyncingSelection = true;
   const rows = tableInstance.getRows?.() ?? [];
   rows.forEach((row: any) => {
     const key = resolveRowKey(row.getData());
-    const isSelected = row.isSelected?.() ?? false;
     const shouldBeSelected = selectedRowKeys.value.includes(key);
-    if (shouldBeSelected && !isSelected) {
-      row.select?.();
-    }
-    if (!shouldBeSelected && isSelected) {
-      row.deselect?.();
-    }
+    row.getElement?.()?.classList.toggle("tabulator-selected", shouldBeSelected);
   });
-  queueMicrotask(() => {
-    isSyncingSelection = false;
-  });
+}
+
+function resolveSelectionAnchorIndex(orderedKeys: Array<string | number>, targetIndex: number) {
+  if (lastSelectionAnchorKey !== null) {
+    const anchorIndex = orderedKeys.findIndex((key) => key === lastSelectionAnchorKey);
+    if (anchorIndex >= 0) {
+      return anchorIndex;
+    }
+  }
+
+  for (let index = targetIndex - 1; index >= 0; index -= 1) {
+    if (selectedRowKeys.value.includes(orderedKeys[index])) {
+      return index;
+    }
+  }
+
+  for (let index = targetIndex + 1; index < orderedKeys.length; index += 1) {
+    if (selectedRowKeys.value.includes(orderedKeys[index])) {
+      return index;
+    }
+  }
+
+  return targetIndex;
 }
 
 function selectRangeToKey(targetKey: string | number) {
@@ -743,15 +754,14 @@ function selectRangeToKey(targetKey: string | number) {
     return false;
   }
 
-  const anchorIndex = lastSelectionAnchorKey === null
-    ? -1
-    : orderedKeys.findIndex((key) => key === lastSelectionAnchorKey);
-  const start = anchorIndex >= 0 ? Math.min(anchorIndex, targetIndex) : targetIndex;
-  const end = anchorIndex >= 0 ? Math.max(anchorIndex, targetIndex) : targetIndex;
+  const anchorIndex = resolveSelectionAnchorIndex(orderedKeys, targetIndex);
+  const start = Math.min(anchorIndex, targetIndex);
+  const end = Math.max(anchorIndex, targetIndex);
   const rangeKeys = orderedKeys.slice(start, end + 1);
   selectedRowKeys.value = Array.from(new Set([...selectedRowKeys.value, ...rangeKeys]));
   syncTableSelectionFromKeys();
   emitSelectionChange();
+  tableInstance?.redraw?.(true);
   return true;
 }
 
@@ -764,10 +774,11 @@ function toggleSelectionKey(key: string | number) {
   lastSelectionAnchorKey = key;
   syncTableSelectionFromKeys();
   emitSelectionChange();
+  tableInstance?.redraw?.(true);
 }
 
 function handleRowSelectionShortcut(event: MouseEvent, rowData: Record<string, unknown>) {
-  if (!props.selectableRows || !(event.ctrlKey || event.metaKey || event.shiftKey)) {
+  if (!props.selectableRows || !event.shiftKey) {
     return false;
   }
 
@@ -780,23 +791,7 @@ function handleRowSelectionShortcut(event: MouseEvent, rowData: Record<string, u
     return true;
   }
 
-  toggleSelectionKey(key);
-  return true;
-}
-
-function handleTableSelectionChanged() {
-  if (isSyncingSelection) {
-    return;
-  }
-  const visibleKeys = new Set(filteredRows.value.map((row) => resolveRowKey(row)));
-  const selectedVisibleKeys = new Set(
-    (tableInstance?.getSelectedData?.() ?? []).map((row: Record<string, unknown>) => resolveRowKey(row))
-  );
-  selectedRowKeys.value = [
-    ...selectedRowKeys.value.filter((key) => !visibleKeys.has(key)),
-    ...filteredRows.value.map((row) => resolveRowKey(row)).filter((key) => selectedVisibleKeys.has(key))
-  ];
-  emitSelectionChange();
+  return false;
 }
 
 function cellTooltip(_: MouseEvent, cell: any) {
@@ -956,10 +951,23 @@ function buildColumns() {
 
   return [
     {
-      formatter: "rowSelection",
-      titleFormatter: "rowSelection",
-      titleFormatterParams: {
-        rowRange: "active"
+      formatter: (cell: any) => {
+        const key = resolveRowKey(cell.getRow().getData());
+        const checked = selectedRowKeys.value.includes(key) ? " checked" : "";
+        return `<input type="checkbox" class="form-check-input" data-row-action="true"${checked} />`;
+      },
+      titleFormatter: () => `<input type="checkbox" class="form-check-input" data-row-action="true" aria-label="Selecionar itens visiveis" />`,
+      headerClick: (event: MouseEvent) => {
+        event.stopPropagation();
+        const visibleKeys = filteredRows.value.map((row) => resolveRowKey(row));
+        const allVisibleSelected = visibleKeys.length > 0 && visibleKeys.every((key) => selectedRowKeys.value.includes(key));
+        selectedRowKeys.value = allVisibleSelected
+          ? selectedRowKeys.value.filter((key) => !visibleKeys.includes(key))
+          : Array.from(new Set([...selectedRowKeys.value, ...visibleKeys]));
+        lastSelectionAnchorKey = allVisibleSelected ? null : visibleKeys.at(-1) ?? null;
+        syncTableSelectionFromKeys();
+        emitSelectionChange();
+        tableInstance?.redraw?.(true);
       },
       hozAlign: "center",
       headerHozAlign: "center",
@@ -1027,8 +1035,7 @@ function renderTable(forceRecreate = false) {
     tableInstance = new (window as any).Tabulator(tableTarget.value, {
       layout: props.layout ?? (ui.isMobileShell ? "fitColumns" : "fitDataStretch"),
       responsiveLayout: ui.isMobileShell ? "collapse" : false,
-      selectableRows: props.selectableRows || false,
-      selectableRowsPersistence: true,
+      selectableRows: false,
       pagination: true,
       paginationSize: pageSize.value,
       height: currentTabulatorHeight(),
@@ -1040,6 +1047,10 @@ function renderTable(forceRecreate = false) {
       },
       placeholder: "Nenhum registro encontrado para o filtro atual.",
       columns: buildColumns(),
+      rowFormatter: (row: any) => {
+        const key = resolveRowKey(row.getData());
+        row.getElement?.()?.classList.toggle("tabulator-selected", selectedRowKeys.value.includes(key));
+      },
       rowClick: (event: MouseEvent, row: any) => {
         const target = event.target as HTMLElement | null;
         const rowData = row.getData();
@@ -1057,9 +1068,6 @@ function renderTable(forceRecreate = false) {
       }
     });
 
-    if (props.selectableRows) {
-      tableInstance.on?.("rowSelectionChanged", handleTableSelectionChanged);
-    }
     applyTableQuickFilter();
     syncTableSelectionFromKeys();
     return;
@@ -1223,12 +1231,14 @@ function selectAllRows() {
   ]));
   syncTableSelectionFromKeys();
   emitSelectionChange();
+  tableInstance?.redraw?.(true);
 }
 
 function clearSelection() {
   selectedRowKeys.value = [];
   if (!isCardMode.value) {
     syncTableSelectionFromKeys();
+    tableInstance?.redraw?.(true);
   }
   emitSelectionChange();
 }
