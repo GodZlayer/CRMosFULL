@@ -286,6 +286,12 @@ export const api = {
       body: JSON.stringify({ ids, visible })
     });
   },
+  updateCatalogBatch(items: Array<{ id: number; name?: string; itemCondition?: string }>) {
+    return request<{ data: CatalogItem[]; updatedCount: number }>("/api/catalog/bulk-update", {
+      method: "POST",
+      body: JSON.stringify({ items })
+    });
+  },
   saveCatalogBatch(items: Partial<CatalogItem>[]) {
     return request<{ data: CatalogItemDetail[] }>("/api/catalog/bulk-create", {
       method: "POST",

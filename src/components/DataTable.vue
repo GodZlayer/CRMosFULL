@@ -117,7 +117,7 @@
               type="checkbox"
               :checked="isRowSelected(row)"
               @click.stop
-              @change="toggleCardSelection(row)"
+              @change="toggleCardSelection(row, $event)"
             />
           </div>
 
@@ -360,6 +360,7 @@ let scheduledRenderId = 0;
 let isComponentUnmounted = false;
 let hasCustomVisibleColumns = false;
 let isSyncingSelection = false;
+let lastSelectionAnchorKey: string | number | null = null;
 
 const pageSize = ref(resolveInitialPageSize());
 const tableHeight = ref(resolveInitialTableHeight());
@@ -602,12 +603,8 @@ function resolveInitialPageSize() {
 }
 
 function resolveInitialTableHeight() {
-  const fallback = normalizeHeightValue(props.height) || "640px";
-  if (typeof window === "undefined") {
-    return fallback;
-  }
-  const stored = normalizeHeightValue(window.localStorage.getItem(tableHeightStorageKey()) || "");
-  return stored || fallback;
+  const fallback = normalizeHeightValue(props.height) || "auto";
+  return fallback;
 }
 
 function resolveInitialVisibleColumnFields() {
@@ -670,7 +667,7 @@ function setPageSize(value: number) {
 }
 
 function setTableHeight(value: string) {
-  tableHeight.value = normalizeHeightValue(value) || "640px";
+  tableHeight.value = normalizeHeightValue(value) || "auto";
   persistTableHeight(tableHeight.value);
   void queueTableRender(true);
 }
@@ -737,6 +734,54 @@ function syncTableSelectionFromKeys() {
   queueMicrotask(() => {
     isSyncingSelection = false;
   });
+}
+
+function selectRangeToKey(targetKey: string | number) {
+  const orderedKeys = filteredRows.value.map((row) => resolveRowKey(row));
+  const targetIndex = orderedKeys.findIndex((key) => key === targetKey);
+  if (targetIndex < 0) {
+    return false;
+  }
+
+  const anchorIndex = lastSelectionAnchorKey === null
+    ? -1
+    : orderedKeys.findIndex((key) => key === lastSelectionAnchorKey);
+  const start = anchorIndex >= 0 ? Math.min(anchorIndex, targetIndex) : targetIndex;
+  const end = anchorIndex >= 0 ? Math.max(anchorIndex, targetIndex) : targetIndex;
+  const rangeKeys = orderedKeys.slice(start, end + 1);
+  selectedRowKeys.value = Array.from(new Set([...selectedRowKeys.value, ...rangeKeys]));
+  syncTableSelectionFromKeys();
+  emitSelectionChange();
+  return true;
+}
+
+function toggleSelectionKey(key: string | number) {
+  if (selectedRowKeys.value.includes(key)) {
+    selectedRowKeys.value = selectedRowKeys.value.filter((item) => item !== key);
+  } else {
+    selectedRowKeys.value = [...selectedRowKeys.value, key];
+  }
+  lastSelectionAnchorKey = key;
+  syncTableSelectionFromKeys();
+  emitSelectionChange();
+}
+
+function handleRowSelectionShortcut(event: MouseEvent, rowData: Record<string, unknown>) {
+  if (!props.selectableRows || !(event.ctrlKey || event.metaKey || event.shiftKey)) {
+    return false;
+  }
+
+  const key = resolveRowKey(rowData);
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (event.shiftKey && selectRangeToKey(key)) {
+    lastSelectionAnchorKey = key;
+    return true;
+  }
+
+  toggleSelectionKey(key);
+  return true;
 }
 
 function handleTableSelectionChanged() {
@@ -925,8 +970,12 @@ function buildColumns() {
       cssClass: "selection-cell",
       cellClick: (event: MouseEvent, cell: any) => {
         event.stopPropagation();
-        cell.getRow().toggleSelect();
-        queueMicrotask(emitSelectionChange);
+        const key = resolveRowKey(cell.getRow().getData());
+        if (event.shiftKey && selectRangeToKey(key)) {
+          lastSelectionAnchorKey = key;
+          return;
+        }
+        toggleSelectionKey(key);
       }
     },
     ...normalized
@@ -993,6 +1042,7 @@ function renderTable(forceRecreate = false) {
       columns: buildColumns(),
       rowClick: (event: MouseEvent, row: any) => {
         const target = event.target as HTMLElement | null;
+        const rowData = row.getData();
         if (
           target?.closest("[data-row-action='true']") ||
           target?.closest(".tabulator-row-header") ||
@@ -1000,7 +1050,10 @@ function renderTable(forceRecreate = false) {
         ) {
           return;
         }
-        emit("row-click", row.getData());
+        if (handleRowSelectionShortcut(event, rowData)) {
+          return;
+        }
+        emit("row-click", rowData);
       }
     });
 
@@ -1086,9 +1139,8 @@ function buildPrintSummaryHtml(rows: Record<string, unknown>[]) {
   return `<section class="print-summary">${cards}</section>`;
 }
 
-function buildPrintTableHtml() {
+function buildPrintTableHtml(rows = filteredRows.value, titleSuffix = "") {
   const exportColumns = fallbackColumns.value;
-  const rows = filteredRows.value;
   const summary = buildPrintSummaryHtml(rows);
   const head = exportColumns
     .map((column) => `<th>${escapeHtml(column.title || column.field || "Coluna")}</th>`)
@@ -1109,7 +1161,7 @@ function buildPrintTableHtml() {
     "<html lang=\"pt-BR\">",
     "<head>",
     "<meta charset=\"utf-8\" />",
-    `<title>${escapeHtml(props.title)}</title>`,
+    `<title>${escapeHtml(`${props.title}${titleSuffix}`)}</title>`,
     "<style>",
     "body { font-family: Arial, sans-serif; margin: 24px; color: #111; }",
     ".print-head { margin-bottom: 16px; }",
@@ -1128,7 +1180,7 @@ function buildPrintTableHtml() {
     "</style>",
     "</head>",
     "<body>",
-    `<div class="print-head"><div class="print-head__eyebrow">${escapeHtml(props.eyebrow)}</div><h1 class="print-head__title">${escapeHtml(props.title)}</h1><div class="print-head__meta">${escapeHtml(`Total listado: ${rows.length}`)}</div></div>`,
+    `<div class="print-head"><div class="print-head__eyebrow">${escapeHtml(props.eyebrow)}</div><h1 class="print-head__title">${escapeHtml(`${props.title}${titleSuffix}`)}</h1><div class="print-head__meta">${escapeHtml(`Total listado: ${rows.length}`)}</div></div>`,
     summary,
     `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`,
     "</body>",
@@ -1136,19 +1188,27 @@ function buildPrintTableHtml() {
   ].join("");
 }
 
-function printTable() {
+function openPrintWindow(html: string) {
   const printWindow = window.open("", "_blank", "width=1200,height=800");
   if (!printWindow) {
     return;
   }
   printWindow.document.open();
-  printWindow.document.write(buildPrintTableHtml());
+  printWindow.document.write(html);
   printWindow.document.close();
   printWindow.focus();
   printWindow.onload = () => {
     printWindow.print();
     printWindow.setTimeout(() => printWindow.close(), 250);
   };
+}
+
+function printTable() {
+  openPrintWindow(buildPrintTableHtml());
+}
+
+function printRows(rows: Record<string, unknown>[], titleSuffix = " - selecionados") {
+  openPrintWindow(buildPrintTableHtml(rows, titleSuffix));
 }
 
 function selectAllRows() {
@@ -1177,14 +1237,38 @@ function isRowSelected(row: Record<string, unknown>) {
   return selectedRowKeys.value.includes(resolveRowKey(row));
 }
 
-function toggleCardSelection(row: Record<string, unknown>) {
+function toggleCardSelection(row: Record<string, unknown>, event?: Event) {
   const key = resolveRowKey(row);
-  if (selectedRowKeys.value.includes(key)) {
-    selectedRowKeys.value = selectedRowKeys.value.filter((item) => item !== key);
-  } else {
-    selectedRowKeys.value = [...selectedRowKeys.value, key];
+  const mouseEvent = event as MouseEvent | undefined;
+  if (mouseEvent?.shiftKey && selectRangeToKey(key)) {
+    lastSelectionAnchorKey = key;
+    return;
   }
-  emitSelectionChange();
+  toggleSelectionKey(key);
+}
+
+function clearSelectionAnchorIfNeeded() {
+  if (lastSelectionAnchorKey !== null && !selectedRowKeys.value.includes(lastSelectionAnchorKey)) {
+    lastSelectionAnchorKey = null;
+  }
+}
+
+watch(selectedRowKeys, clearSelectionAnchorIfNeeded);
+
+function handleCardClick(event: MouseEvent, row: Record<string, unknown>) {
+  const target = event.target as HTMLElement | null;
+  if (
+    target?.closest("[data-row-action='true']") ||
+    target?.closest("summary") ||
+    target?.closest("details") ||
+    target?.closest("input[type='checkbox']")
+  ) {
+    return;
+  }
+  if (handleRowSelectionShortcut(event, row)) {
+    return;
+  }
+  emit("row-click", row);
 }
 
 function readPropValue(
@@ -1280,19 +1364,6 @@ function triggerCardAction(action: CardAction, row: Record<string, unknown>, eve
   (event.target as HTMLElement | null)?.closest("details")?.removeAttribute("open");
 }
 
-function handleCardClick(event: MouseEvent, row: Record<string, unknown>) {
-  const target = event.target as HTMLElement | null;
-  if (
-    target?.closest("[data-row-action='true']") ||
-    target?.closest("summary") ||
-    target?.closest("details") ||
-    target?.closest("input[type='checkbox']")
-  ) {
-    return;
-  }
-  emit("row-click", row);
-}
-
 function refreshPreferencesFromStorage() {
   pageSize.value = resolveInitialPageSize();
   tableHeight.value = resolveInitialTableHeight();
@@ -1302,6 +1373,7 @@ function refreshPreferencesFromStorage() {
 defineExpose({
   selectAllRows,
   clearSelection,
+  printRows,
   getSelectedRows: () =>
     props.rows.filter((row) => selectedRowKeys.value.includes(resolveRowKey(row)))
 });

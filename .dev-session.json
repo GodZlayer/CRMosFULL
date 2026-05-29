@@ -1,10 +1,12 @@
 {
-  "ownerPid": 15568,
+  "ownerPid": 18116,
   "childPids": [
     15792,
-    15800
+    11568,
+    5712
   ],
-  "startedAt": "2026-05-19T11:37:59.135Z",
+  "startedAt": "2026-05-29T19:06:26.407Z",
   "apiPort": 3001,
-  "webPort": 5173
+  "webPort": 5173,
+  "webstorePort": 5174
 }

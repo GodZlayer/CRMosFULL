@@ -80,6 +80,18 @@
  <i class="fa-solid fa-chart-pie me-2"></i>
  Status
  </button>
+ <button class="btn btn-outline-secondary rounded-pill" :disabled="!selectedCount" @click="openBatchTitleEdit">
+ <i class="fa-solid fa-heading me-2"></i>
+ Títulos
+ </button>
+ <button class="btn btn-outline-secondary rounded-pill" :disabled="!selectedCount" @click="openBatchConditionEdit">
+ <i class="fa-solid fa-tags me-2"></i>
+ Estado
+ </button>
+ <button class="btn btn-outline-secondary rounded-pill" :disabled="!selectedCount" @click="printSelectedItems">
+ <i class="fa-solid fa-print me-2"></i>
+ Imprimir selecionados
+ </button>
  <button class="btn btn-outline-primary rounded-pill" :disabled="!selectedCount" @click="openBatchRestock">
  <i class="fa-solid fa-boxes-stacked me-2"></i>
  Repor em lote
@@ -164,6 +176,58 @@
  <button type="button" class="btn btn-primary rounded-pill" @click="showSelectionStatus = false">
  <i class="fa-solid fa-check me-2"></i>
  Fechar conferência
+ </button>
+ </div>
+ </div>
+ </ModalDialog>
+
+ <ModalDialog v-model="showBatchTitleEdit" title="Editor de títulos em massa" :eyebrow="eyebrow" size="xl">
+ <div class="d-grid gap-3">
+ <div class="table-responsive">
+ <table class="table align-middle">
+ <thead>
+ <tr>
+ <th>Item</th>
+ <th>Novo título</th>
+ </tr>
+ </thead>
+ <tbody>
+ <tr v-for="item in batchTitleRows" :key="item.id">
+ <td>
+ <div class="fw-semibold">{{ item.currentName }}</div>
+ <div class="small">{{ item.sku || 'Sem SKU' }}</div>
+ </td>
+ <td>
+ <input v-model.trim="item.name" class="form-control rounded-4" />
+ </td>
+ </tr>
+ </tbody>
+ </table>
+ </div>
+ <div class="d-flex justify-content-end gap-2">
+ <button type="button" class="btn btn-light rounded-pill" @click="showBatchTitleEdit = false">Cancelar</button>
+ <button class="btn btn-primary rounded-pill" :disabled="!batchTitleRows.length" @click="submitBatchTitleEdit">
+ <i class="fa-solid fa-floppy-disk me-2"></i>
+ Salvar títulos
+ </button>
+ </div>
+ </div>
+ </ModalDialog>
+
+ <ModalDialog v-model="showBatchConditionEdit" title="Editor de estado em massa" :eyebrow="eyebrow" size="lg">
+ <div class="d-grid gap-3">
+ <div>
+ <label class="form-label fw-semibold">Estado dos itens selecionados</label>
+ <select v-model="batchConditionValue" class="form-select rounded-4">
+ <option v-for="condition in session.meta?.itemConditions || []" :key="condition.code" :value="condition.code">{{ condition.label }}</option>
+ </select>
+ </div>
+ <div class="small">A alteração será aplicada aos {{ selectedCount }} item(ns) selecionado(s).</div>
+ <div class="d-flex justify-content-end gap-2">
+ <button type="button" class="btn btn-light rounded-pill" @click="showBatchConditionEdit = false">Cancelar</button>
+ <button class="btn btn-primary rounded-pill" :disabled="!selectedCount || !batchConditionValue" @click="submitBatchConditionEdit">
+ <i class="fa-solid fa-floppy-disk me-2"></i>
+ Salvar estado
  </button>
  </div>
  </div>
@@ -781,6 +845,8 @@ const showForm = ref(false);
 const showRestock = ref(false);
 const showLotEdit = ref(false);
 const showSelectionStatus = ref(false);
+const showBatchTitleEdit = ref(false);
+const showBatchConditionEdit = ref(false);
 const showBatchRestock = ref(false);
 const showBatchCreate = ref(false);
 const restockTarget = ref<CatalogItemDetail | null>(null);
@@ -788,6 +854,8 @@ const lotEditTarget = ref<CatalogStockBatch | null>(null);
 const revertingReplenishmentId = ref(0);
 const busyLotEdit = ref(false);
 const cashAccountOptions = ref<Array<{ id: number; code: string; label: string }>>([]);
+const batchTitleRows = ref<Array<{ id: number; currentName: string; name: string; sku: string }>>([]);
+const batchConditionValue = ref("NOVA");
 const batchRestockRows = ref<Array<{ id: number; name: string; quantity: number; costAmount: number; priceAmount: number; additionalCost: number; notes: string; generateFinanceEntry?: boolean; cashAccountId?: number }>>([]);
 const batchCreateRows = ref<Array<{ sku: string; name: string; brand: string; category: string; subcategory: string; itemCondition: string; stockQuantity: number; minStock: number; costAmount: number; priceAmount: number; generateFinanceEntry: boolean; cashAccountId: number }>>([]);
 
@@ -1299,6 +1367,34 @@ function openBatchRestock() {
  showBatchRestock.value = true;
 }
 
+function openBatchTitleEdit() {
+ if (!selectedRows.value.length) {
+ return;
+ }
+ batchTitleRows.value = selectedRows.value.map((item) => ({
+ id: Number(item.id),
+ currentName: String(item.name || "Item"),
+ name: String(item.name || ""),
+ sku: String(item.sku || "")
+ }));
+ showBatchTitleEdit.value = true;
+}
+
+function openBatchConditionEdit() {
+ if (!selectedRows.value.length) {
+ return;
+ }
+ batchConditionValue.value = String(selectedRows.value[0]?.item_condition || "NOVA");
+ showBatchConditionEdit.value = true;
+}
+
+function printSelectedItems() {
+ if (!selectedRows.value.length) {
+ return;
+ }
+ catalogTable.value?.printRows?.(selectedRows.value, " - selecionados");
+}
+
 function openCreate() {
  resetForm();
  showForm.value = true;
@@ -1544,6 +1640,51 @@ async function submitBatchRestock() {
  await loadItems();
  clearSelection();
  await notifySuccess("Reposição em lote registrada", "Os itens selecionados foram atualizados de uma vez.");
+ } catch (error) {
+ await notifyError(error);
+ }
+}
+
+async function submitBatchTitleEdit() {
+ const payload = batchTitleRows.value
+ .map((item) => ({
+ id: Number(item.id),
+ name: String(item.name || "").trim()
+ }))
+ .filter((item) => item.id > 0);
+
+ const invalid = payload.find((item) => !item.name);
+ if (invalid) {
+ await notifyError(new Error("Todos os itens precisam ter um título."));
+ return;
+ }
+
+ try {
+ const count = payload.length;
+ await api.updateCatalogBatch(payload);
+ showBatchTitleEdit.value = false;
+ batchTitleRows.value = [];
+ await loadItems();
+ clearSelection();
+ await notifySuccess("Títulos atualizados", `${count} item(ns) atualizado(s).`);
+ } catch (error) {
+ await notifyError(error);
+ }
+}
+
+async function submitBatchConditionEdit() {
+ const itemCondition = String(batchConditionValue.value || "").trim();
+ if (!selectedIds.value.length || !itemCondition) {
+ return;
+ }
+
+ try {
+ const count = selectedIds.value.length;
+ await api.updateCatalogBatch(selectedIds.value.map((id) => ({ id, itemCondition })));
+ showBatchConditionEdit.value = false;
+ await loadItems();
+ clearSelection();
+ await notifySuccess("Estado atualizado", `${count} item(ns) atualizado(s).`);
  } catch (error) {
  await notifyError(error);
  }

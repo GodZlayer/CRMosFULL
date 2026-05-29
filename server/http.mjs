@@ -359,6 +359,63 @@ export function createApiServer(repo, options = {}) {
         return sendJson(response, 200, { success: true, updatedCount: ids.length, visible: Boolean(visible) });
       }
 
+      if (pathname === "/api/catalog/bulk-update" && method === "POST") {
+        ensureRole(user, ["ADMIN", "GERENTE"]);
+        const body = await readJsonBody(request);
+        const items = Array.isArray(body.items) ? body.items : [];
+        const allowedConditions = new Set(["NOVA", "SEMINOVA", "USADA"]);
+        const timestamp = new Date().toISOString();
+        const updatedIds = [];
+
+        if (!items.length) {
+          throw new Error("Selecione ao menos um item.");
+        }
+
+        const updateName = repo.db.prepare("UPDATE catalog_items SET name = ?, updated_at = ? WHERE id = ?");
+        const updateCondition = repo.db.prepare("UPDATE catalog_items SET item_condition = ?, updated_at = ? WHERE id = ?");
+        const updateBoth = repo.db.prepare("UPDATE catalog_items SET name = ?, item_condition = ?, updated_at = ? WHERE id = ?");
+        repo.db.exec("BEGIN IMMEDIATE;");
+        try {
+          for (const item of items) {
+            const id = Number(item?.id || 0);
+            if (!id) {
+              continue;
+            }
+            const hasName = Object.prototype.hasOwnProperty.call(item, "name");
+            const hasCondition = Object.prototype.hasOwnProperty.call(item, "itemCondition") || Object.prototype.hasOwnProperty.call(item, "item_condition");
+            const name = String(item.name || "").trim();
+            const itemCondition = String(item.itemCondition || item.item_condition || "").trim().toUpperCase();
+
+            if (hasName && !name) {
+              throw new Error("Título inválido em um dos itens selecionados.");
+            }
+            if (hasCondition && !allowedConditions.has(itemCondition)) {
+              throw new Error("Estado inválido em um dos itens selecionados.");
+            }
+
+            if (hasName && hasCondition) {
+              updateBoth.run(name, itemCondition, timestamp, id);
+              updatedIds.push(id);
+            } else if (hasName) {
+              updateName.run(name, timestamp, id);
+              updatedIds.push(id);
+            } else if (hasCondition) {
+              updateCondition.run(itemCondition, timestamp, id);
+              updatedIds.push(id);
+            }
+          }
+          repo.db.exec("COMMIT;");
+        } catch (error) {
+          repo.db.exec("ROLLBACK;");
+          throw error;
+        }
+        const uniqueIds = [...new Set(updatedIds)];
+        return sendJson(response, 200, {
+          data: uniqueIds.map((id) => repo.getCatalogItem(id)).filter(Boolean),
+          updatedCount: uniqueIds.length
+        });
+      }
+
       if (pathname === "/api/catalog/bulk-create" && method === "POST") {
         ensureRole(user, ["ADMIN", "GERENTE"]);
         const body = await readJsonBody(request);
