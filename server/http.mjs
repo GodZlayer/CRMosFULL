@@ -1569,11 +1569,12 @@ function exportFullBackupZip(repo, payload = {}, uploadsRoot) {
     version: 1,
     exportedAt,
     odsFile: ods.fileName,
-    includes: ["backup ODS", "uploads completos", "historico de emails", "arquivos do sistema"]
+    includes: ["backup ODS", "uploads completos", "historico de emails", "arquivos do sistema", "credenciais OAuth/Gmail"]
   };
   const baseEntries = [
     { name: "manifest.json", data: Buffer.from(JSON.stringify(manifest, null, 2), "utf8") },
-    { name: `data/${ods.fileName}`, data: ods.buffer }
+    { name: `data/${ods.fileName}`, data: ods.buffer },
+    { name: "secrets/oauth-gmail.json", data: Buffer.from(JSON.stringify(buildFullBackupSecrets(repo, exportedAt), null, 2), "utf8") }
   ];
   const uploadEntries = collectDirectoryEntries(uploadsRoot, "uploads");
   const systemEntries = [
@@ -1624,9 +1625,71 @@ function importFullBackupZip(repo, payload = {}, uploadsRoot) {
     mkdirSync(uploadsRoot, { recursive: true });
     summary.restoredUploads = writeZipEntriesToDirectory(entries, uploadsRoot, "uploads");
   }
+  const secretsEntry = entries.find((entry) => entry.name === "secrets/oauth-gmail.json");
+  if (secretsEntry && payload.restoreSecrets !== false) {
+    summary.restoredSecrets = importFullBackupSecrets(repo, secretsEntry.data, payload._actor || payload.actor);
+  }
   summary.zipFileName = payload.fileName || "";
   summary.importedAt = new Date().toISOString();
   return summary;
+}
+
+function buildFullBackupSecrets(repo, exportedAt) {
+  const gmailSettings = getGmailSettings(repo);
+  return {
+    kind: "brasil-express-crm-oauth-secrets",
+    version: 1,
+    exportedAt,
+    warning: "Arquivo sensivel. Contem credenciais OAuth, tokens Gmail e segredos usados localmente pelo CRM.",
+    environment: {
+      GOOGLE_CLIENT_ID: normalizeText(process.env.GOOGLE_CLIENT_ID),
+      GOOGLE_CLIENT_SECRET: normalizeText(process.env.GOOGLE_CLIENT_SECRET),
+      GMAIL_CLIENT_ID: normalizeText(process.env.GMAIL_CLIENT_ID),
+      GMAIL_CLIENT_SECRET: normalizeText(process.env.GMAIL_CLIENT_SECRET),
+      GMAIL_REFRESH_TOKEN: normalizeText(process.env.GMAIL_REFRESH_TOKEN),
+      GMAIL_ACCESS_TOKEN: normalizeText(process.env.GMAIL_ACCESS_TOKEN),
+      GMAIL_FROM: normalizeText(process.env.GMAIL_FROM),
+      BRASILEXPRESS_CONTACT_EMAIL: normalizeText(process.env.BRASILEXPRESS_CONTACT_EMAIL)
+    },
+    gmailApiSettings: {
+      clientId: gmailSettings.clientId,
+      clientSecret: gmailSettings.clientSecret,
+      email: gmailSettings.email,
+      accessToken: gmailSettings.accessToken,
+      accessTokenExpiresAt: gmailSettings.accessTokenExpiresAt,
+      refreshToken: gmailSettings.refreshToken,
+      status: gmailSettings.status,
+      connectedAt: gmailSettings.connectedAt,
+      updatedAt: gmailSettings.updatedAt
+    }
+  };
+}
+
+function importFullBackupSecrets(repo, data, actor = null) {
+  const secrets = JSON.parse(Buffer.from(data).toString("utf8"));
+  const env = secrets.environment || {};
+  const gmail = secrets.gmailApiSettings || {};
+  const imported = {
+    clientId: normalizeText(gmail.clientId || env.GOOGLE_CLIENT_ID || env.GMAIL_CLIENT_ID),
+    clientSecret: normalizeText(gmail.clientSecret || env.GOOGLE_CLIENT_SECRET || env.GMAIL_CLIENT_SECRET),
+    email: normalizeText(gmail.email || env.GMAIL_FROM),
+    accessToken: normalizeText(gmail.accessToken || env.GMAIL_ACCESS_TOKEN),
+    accessTokenExpiresAt: normalizeText(gmail.accessTokenExpiresAt),
+    refreshToken: normalizeText(gmail.refreshToken || env.GMAIL_REFRESH_TOKEN),
+    status: normalizeText(gmail.status, gmail.refreshToken || env.GMAIL_REFRESH_TOKEN ? "CONNECTED" : "DISCONNECTED"),
+    connectedAt: normalizeText(gmail.connectedAt),
+    updatedAt: new Date().toISOString(),
+    updatedBy: actor?.name || ""
+  };
+  saveAppSetting(repo, "gmail_api_settings", imported);
+  return {
+    gmailApiSettings: Boolean(imported.clientId || imported.clientSecret || imported.refreshToken || imported.accessToken || imported.email),
+    hasClientId: Boolean(imported.clientId),
+    hasClientSecret: Boolean(imported.clientSecret),
+    hasRefreshToken: Boolean(imported.refreshToken),
+    hasAccessToken: Boolean(imported.accessToken),
+    email: imported.email
+  };
 }
 
 function buildPublicWebstoreSettings(repo) {
